@@ -19,6 +19,11 @@ export const DEF = {
   // Plate calculator: null bar/set means "use the standard kg/lb defaults" — most profiles
   // never open the config sheet, so this stays absent rather than pre-filled per unit.
   plateBar: null, plateSet: null,
+  // Gym equipment presets (issue: feature request) — "what this gym actually has", named so
+  // a traveller can switch between e.g. Home and Hotel. activeEquipment is a preset id or
+  // null ("everything" — the app's original, unfiltered behavior). Presets are also offered
+  // as a one-tap prefill for the Coach intake's own equipment question.
+  equipmentPresets: [], activeEquipment: null,
   // AI Coach (issue: AI enablement). null until the profile opts in — a null namespace is the
   // same app it was before the feature existed, which is what Epic F asks for. Shape and
   // bounds live in lib/coach.js.

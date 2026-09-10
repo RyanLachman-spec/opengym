@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from './store/useStore.js'
 import { useUI } from './store/useUI.js'
-import { EXDB, EXIDX, BODYPARTS, isCardio, allExercises, equipmentOf } from './lib/exercises.js'
+import { EXDB, EXIDX, BODYPARTS, isCardio, allExercises, equipmentOf, COMMON_EQUIPMENT } from './lib/exercises.js'
 import { fmtDate, fmtNum, fmtVol, fmtDur, durPart, todayISO, uid, exCount, DAYN, MONTHS_LONG, ACCENTS } from './lib/format.js'
 import { lastEntryFor, bestWeightFor, buildSets, effectiveRoutineId, workoutVolume, setsDone, setsDoneActive, lastBW, supersetUnits, unitOf, setLabel, defaultConfig, cleanupSg, modeOf, effortOf } from './lib/history.js'
 import { beep, vibrate } from './lib/sound.js'
@@ -11,7 +11,7 @@ import { starterRoutines } from './lib/starter.js'
 import Media, { Thumb } from './components/Media.jsx'
 import Stepper from './components/Stepper.jsx'
 import Icon from './components/Icon.jsx'
-import { Button, Slider, Switch, Segmented, SelectRow, TextArea } from './components/ui.jsx'
+import { Button, Slider, Switch, Segmented, SelectRow, TextArea, TextField } from './components/ui.jsx'
 import { glyphOf, GLYPH_GROUPS, DEFAULT_GLYPH } from './lib/glyphs.js'
 import BodyMap from './components/BodyMap.jsx'
 import { loadOfWorkouts } from './lib/muscles.js'
@@ -313,6 +313,67 @@ function PlateCalc({ startWeight }) {
 }
 export const plateCalcSheet = startWeight => ui().openSheet(() => <PlateCalc startWeight={startWeight} />)
 
+/* ============================ gym equipment presets ============================ */
+// "What this gym actually has" (issue: feature request) — named so a traveller can flip
+// between e.g. Home and Hotel. A preset is just a name + a subset of COMMON_EQUIPMENT;
+// activeEquipment (a preset id, or null for "everything") is what the exercise picker and
+// Coach intake actually read.
+function EquipmentPresetEditor({ preset, close }) {
+  const [name, setName] = useState(preset.name)
+  const [have, setHave] = useState(new Set(preset.eq))
+  const toggle = e => setHave(h => { const n = new Set(h); n.has(e) ? n.delete(e) : n.add(e); return n })
+  const save = () => {
+    const nm = name.trim() || t('My gym')
+    update(s => {
+      const arr = s.equipmentPresets || []
+      const next = { id: preset.id, name: nm, eq: COMMON_EQUIPMENT.filter(e => have.has(e)) }
+      const i = arr.findIndex(p => p.id === preset.id)
+      s.equipmentPresets = i === -1 ? [...arr, next] : arr.map((p, idx) => (idx === i ? next : p))
+    })
+    close()
+  }
+  const del = () => confirmSheet({
+    title: t('Delete this preset?'), confirmText: t('Delete'), danger: true,
+    onConfirm: () => { update(s => { s.equipmentPresets = (s.equipmentPresets || []).filter(p => p.id !== preset.id); if (s.activeEquipment === preset.id) s.activeEquipment = null }); close() },
+  })
+  return <>
+    <h3>{preset.isNew ? t('New preset') : t('Edit preset')}</h3>
+    <TextField value={name} onChange={e => setName(e.target.value)} placeholder={t('e.g. Home gym')} maxLength={30} />
+    <div style={{ height: 14 }} />
+    <div className="muted small" style={{ marginBottom: 8 }}>{t('Equipment available here')}</div>
+    <div className="row" style={{ flexWrap: 'wrap', gap: 7 }}>
+      {COMMON_EQUIPMENT.map(e => <button key={e} className={'chip' + (have.has(e) ? ' on' : '')}
+        onClick={() => toggle(e)} style={{ textTransform: 'capitalize' }}>{t(e)}</button>)}
+    </div>
+    <div style={{ height: 16 }} /><Button variant="primary" onClick={save}>{t('Save')}</Button>
+    {!preset.isNew && <><div style={{ height: 8 }} /><Button variant="danger" onClick={del}>{t('Delete preset')}</Button></>}
+  </>
+}
+
+function EquipmentPresetsSheet() {
+  const st = useStore(s => s.S)
+  const presets = st.equipmentPresets || []
+  const edit = preset => ui().openSheet(c => <EquipmentPresetEditor preset={preset} close={c} />)
+  const setActive = id => update(s => { s.activeEquipment = s.activeEquipment === id ? null : id })
+  return <>
+    <h3>{t('Gym equipment')}</h3>
+    <div className="muted small" style={{ marginBottom: 14 }}>
+      {t('Presets for what a gym actually has. The active one narrows the exercise picker and pre-fills the Coach intake — pick none to see everything, like before.')}
+    </div>
+    {presets.length === 0 && <div className="muted small" style={{ marginBottom: 14 }}>{t('No presets yet.')}</div>}
+    <div className="list" style={{ marginBottom: 14 }}>
+      {presets.map(p => <div key={p.id} className="item" onClick={() => setActive(p.id)}>
+        <span className="lrow-i"><Icon name="dumbbell" /></span>
+        <div className="grow"><div className="tt">{p.name}</div><div className="ss">{t('{0} equipment types', p.eq.length)}</div></div>
+        {st.activeEquipment === p.id && <span className="tag acc">{t('Active')}</span>}
+        <button className="iconbtn" aria-label={t('Edit')} onClick={ev => { ev.stopPropagation(); edit(p) }}><Icon name="pencil" /></button>
+      </div>)}
+    </div>
+    <Button icon="plus" onClick={() => edit({ id: uid(), name: '', eq: [], isNew: true })}>{t('Add preset')}</Button>
+  </>
+}
+export const equipmentPresetsSheet = () => ui().openSheet(() => <EquipmentPresetsSheet />)
+
 /* ============================ exercise detail ============================ */
 // Estimated 1RM for one exercise (issue #18): what the log already implies, plus a calculator
 // for a set you have not done — so the number is reachable before there is any history.
@@ -473,14 +534,19 @@ function usageMap(st) {
 function ExercisePicker({ onPick, close }) {
   const st = useStore(s => s.S)
   const usage = usageMap(st)
+  const activePreset = (st.equipmentPresets || []).find(p => p.id === st.activeEquipment)
   const [q, setQ] = useState('')
   const [bp, setBp] = useState('')          // '' = all, '★' = chosen, else a body part
   const [eq, setEq] = useState('')          // '' = any equipment
+  // Defaults on when a gym preset is active — a traveller opening this picker wants what's
+  // in front of them, but one tap gets back to the full library for this session only.
+  const [myGym, setMyGym] = useState(!!activePreset)
   const [shown, setShown] = useState(50)
   const ql = q.toLowerCase().trim()
   const all = allExercises(st)
   let base = all.filter(e =>
     (bp === '★' ? usage[e.id] : (!bp || e.bp === bp)) &&
+    (!myGym || !activePreset || !e.eq || activePreset.eq.includes(e.eq)) &&
     (!ql || e.n.toLowerCase().includes(ql) || e.tg.includes(ql) || e.eq.includes(ql) || (e.desc || '').toLowerCase().includes(ql)))
   if (bp === '★') base = [...base].sort((a, b) => (usage[b.id] - usage[a.id]) || (a.n < b.n ? -1 : 1))
   const eqOpts = equipmentOf(base)
@@ -492,6 +558,11 @@ function ExercisePicker({ onPick, close }) {
     <h3>{t('Add exercise')}</h3>
     <div className="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
       <input className="input" placeholder={t('Search {0} exercises…', all.length)} value={q} onChange={e => { setQ(e.target.value); setShown(50) }} /></div>
+    {activePreset && <div className="chips" style={{ margin: '10px 0 6px' }}>
+      <button className={'chip nocap' + (myGym ? ' on' : '')} onClick={() => setMyGym(v => !v)}>
+        <Icon name="dumbbell" style={{ fontSize: 12, display: 'inline-block', marginRight: 4, verticalAlign: '-1px' }} />{myGym ? t('{0} only', activePreset.name) : t('Showing everything')}
+      </button>
+    </div>}
     <div className="chips" style={{ margin: eqOpts.length > 1 ? '10px 0 6px' : '10px 0' }}>
       {chosenCount > 0 && <button className={'chip' + (bp === '★' ? ' on' : '')} onClick={() => { setBp('★'); setEq(''); setShown(50) }}><Icon name="starFill" style={{ fontSize: 12, display: 'inline-block', marginRight: 4, verticalAlign: '-1px' }} />{t('Chosen')} ({chosenCount})</button>}
       <button className={'chip nocap' + (!bp ? ' on' : '')} onClick={() => { setBp(''); setEq(''); setShown(50) }}>{t('All')}</button>

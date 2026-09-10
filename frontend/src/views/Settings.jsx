@@ -10,7 +10,7 @@ import { wakeLockSupported } from '../lib/wakelock.js'
 import { t, LANGS, INSTR_LANGS } from '../lib/i18n.js'
 import { DEMO, REPO } from '../lib/demo.js'
 import { MOBILE, shareExport, syncReminder } from '../lib/mobile.js'
-import { loadStarterPlan, confirmSheet, importFromApp } from '../sheets.jsx'
+import { loadStarterPlan, confirmSheet, importFromApp, equipmentPresetsSheet } from '../sheets.jsx'
 import { coachAvailable, hasConsent } from '../lib/coach.js'
 import { forgetCoach } from '../lib/coach-api.js'
 import Icon from '../components/Icon.jsx'
@@ -116,6 +116,9 @@ export default function Settings() {
           options={[{ value: 'kg', label: 'kg' }, { value: 'lb', label: 'lb' }]}
           value={S.unit} onChange={v => update(s => { s.unit = v })} />
       </Row>
+      <Row icon="dumbbell" iconTint="var(--orange)" title={t('Gym equipment')}
+        subtitle={S.equipmentPresets?.length ? (S.equipmentPresets.find(p => p.id === S.activeEquipment)?.name || t('Not narrowed — showing everything')) : t('Save what a gym has, switch between gyms')}
+        accessory="chevron" onClick={equipmentPresetsSheet} />
     </Section>
 
     {/* ---------- during a workout ---------- */}
