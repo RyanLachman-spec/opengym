@@ -22,6 +22,7 @@ import { nextPrescription, applyPrescription, policyFor, defaultIncrement, POLIC
 import { MOBILE, shareExport } from './lib/mobile.js'
 import { calcPlates, barOf, plateSetOf, plateLabel, DEFAULT_SET } from './lib/plates.js'
 import { addPhoto, listPhotos, deletePhoto } from './lib/photos.js'
+import { api } from './lib/api.js'
 
 const S = () => useStore.getState().S
 const update = (...a) => useStore.getState().update(...a)
@@ -461,6 +462,55 @@ function ProgressPhotos() {
   </>
 }
 export const progressPhotosSheet = () => ui().openSheet(() => <ProgressPhotos />)
+
+/* ============================ share progress ============================ */
+// A read-only link to /api/share/view's summary (see api/server.js — counts and a volume
+// trend, never the workout log). One active link at a time; creating a new one replaces
+// whatever was there, same mental model as a session.
+function ShareProgressSheet() {
+  const [status, setStatus] = useState(null)   // null while loading
+  const [busy, setBusy] = useState(false)
+  const refresh = () => api('/api/share/status').then(setStatus).catch(() => setStatus({ active: false }))
+  useEffect(() => { refresh() }, [])
+
+  const create = async () => {
+    setBusy(true)
+    try { await api('/api/share', { method: 'POST', body: JSON.stringify({ days: 7 }) }); await refresh() }
+    catch (e) { toast(e.message || t('Could not create the link')) }
+    setBusy(false)
+  }
+  const revoke = () => confirmSheet({
+    title: t('Revoke this link?'), message: t('Anyone holding the old link loses access immediately.'),
+    confirmText: t('Revoke'), danger: true,
+    onConfirm: async () => {
+      setBusy(true)
+      try { await api('/api/share/revoke', { method: 'POST', body: '{}' }); await refresh() } catch (e) { /* */ }
+      setBusy(false)
+    },
+  })
+  const url = status?.token ? `${location.origin}${location.pathname}#/share/${status.token}` : ''
+  const copy = () => {
+    navigator.clipboard?.writeText(url)
+      .then(() => toast(t('Link copied')))
+      .catch(() => toast(t('Could not copy — select the link and copy it manually')))
+  }
+
+  if (!status) return <h3>{t('Share progress')}</h3>
+  return <>
+    <h3>{t('Share progress')}</h3>
+    <div className="muted small" style={{ marginBottom: 14 }}>
+      {t('A read-only link with your streak, workout counts, recent PRs and a volume trend — never your workout log or account access. Expires on its own, or revoke it any time.')}
+    </div>
+    {status.active ? <>
+      <div className="card" style={{ marginBottom: 10, wordBreak: 'break-all' }}><span className="small">{url}</span></div>
+      <div className="muted small" style={{ marginBottom: 14 }}>{t('Expires {0}', fmtDate(new Date(status.expiresAt).toISOString().slice(0, 10), true))}</div>
+      <Button variant="primary" icon="link" disabled={busy} onClick={copy}>{t('Copy link')}</Button>
+      <div style={{ height: 8 }} />
+      <Button variant="danger" icon="trash" disabled={busy} onClick={revoke}>{t('Revoke link')}</Button>
+    </> : <Button variant="primary" icon="link" disabled={busy} onClick={create}>{t('Create link (valid 7 days)')}</Button>}
+  </>
+}
+export const shareProgressSheet = () => ui().openSheet(() => <ShareProgressSheet />)
 
 /* ============================ exercise detail ============================ */
 // Estimated 1RM for one exercise (issue #18): what the log already implies, plus a calculator
