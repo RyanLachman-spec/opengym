@@ -21,6 +21,7 @@ import { estimate1RM, best1RM, is1RMRecord, REP_CAP } from './lib/onerm.js'
 import { nextPrescription, applyPrescription, policyFor, defaultIncrement, POLICIES_FOR, POLICY_NAME, POLICY_DESC } from './lib/progression.js'
 import { MOBILE, shareExport } from './lib/mobile.js'
 import { calcPlates, barOf, plateSetOf, plateLabel, DEFAULT_SET } from './lib/plates.js'
+import { addPhoto, listPhotos, deletePhoto } from './lib/photos.js'
 
 const S = () => useStore.getState().S
 const update = (...a) => useStore.getState().update(...a)
@@ -373,6 +374,93 @@ function EquipmentPresetsSheet() {
   </>
 }
 export const equipmentPresetsSheet = () => ui().openSheet(() => <EquipmentPresetsSheet />)
+
+/* ============================ progress photos ============================ */
+// Device-only (see lib/photos.js for why) — a small gallery, a full-size view with delete,
+// and a side-by-side compare between any two photos you pick.
+function PhotoDetail({ photo, url, onDeleted, close }) {
+  const del = () => confirmSheet({
+    title: t('Delete this photo?'), confirmText: t('Delete'), danger: true,
+    onConfirm: async () => { await deletePhoto(photo.id); onDeleted(photo.id); close() },
+  })
+  return <>
+    <div className="muted small" style={{ textAlign: 'center', marginBottom: 10 }}>{fmtDate(photo.d, true)}</div>
+    <img src={url} alt="" style={{ width: '100%', borderRadius: 14, marginBottom: 14, maxHeight: '55vh', objectFit: 'contain', background: 'var(--surface-2)', display: 'block' }} />
+    <Button variant="danger" icon="trash" onClick={del}>{t('Delete photo')}</Button>
+  </>
+}
+
+function PhotoCompare({ a, b, urlA, urlB }) {
+  const cell = (p, url) => <div style={{ flex: 1, textAlign: 'center' }}>
+    <img src={url} alt="" style={{ width: '100%', aspectRatio: '3/4', objectFit: 'cover', borderRadius: 12, background: 'var(--surface-2)', display: 'block' }} />
+    <div className="small dim" style={{ marginTop: 6 }}>{fmtDate(p.d, true)}</div>
+  </div>
+  return <>
+    <h3>{t('Compare')}</h3>
+    <div className="row" style={{ gap: 8, alignItems: 'flex-start' }}>{cell(a, urlA)}{cell(b, urlB)}</div>
+  </>
+}
+
+function ProgressPhotos() {
+  const fileRef = useRef(null)
+  const urls = useRef(new Map())    // photo id -> object URL, revoked on unmount
+  const [photos, setPhotos] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [supported, setSupported] = useState(true)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selected, setSelected] = useState([])
+
+  const refresh = () => listPhotos().then(setPhotos).catch(() => setSupported(false)).finally(() => setLoading(false))
+  useEffect(() => { refresh() }, [])
+  useEffect(() => () => { urls.current.forEach(u => URL.revokeObjectURL(u)); urls.current.clear() }, [])
+
+  const urlFor = p => {
+    if (!urls.current.has(p.id)) urls.current.set(p.id, URL.createObjectURL(p.blob))
+    return urls.current.get(p.id)
+  }
+  const onFile = ev => {
+    const f = ev.target.files[0]; ev.target.value = ''
+    if (!f) return
+    addPhoto(f, todayISO()).then(refresh).catch(() => toast(t('Could not save that photo')))
+  }
+  const toggleSelect = id => setSelected(s => (s.includes(id) ? s.filter(x => x !== id) : (s.length < 2 ? [...s, id] : s)))
+  const openDetail = p => ui().openSheet(c => <PhotoDetail photo={p} url={urlFor(p)}
+    onDeleted={pid => setPhotos(ph => ph.filter(x => x.id !== pid))} close={c} />)
+  const compare = () => {
+    const a = photos.find(p => p.id === selected[0]), b = photos.find(p => p.id === selected[1])
+    if (a && b) ui().openSheet(() => <PhotoCompare a={a} b={b} urlA={urlFor(a)} urlB={urlFor(b)} />)
+  }
+
+  if (!supported) return <>
+    <h3>{t('Progress photos')}</h3>
+    <div className="muted small">{t('Not supported in this browser.')}</div>
+  </>
+  return <>
+    <div className="row between" style={{ marginBottom: 4 }}>
+      <h3 style={{ margin: 0 }}>{t('Progress photos')}</h3>
+      {photos.length > 1 && <button className="chip nocap" onClick={() => { setSelectMode(v => !v); setSelected([]) }}>{selectMode ? t('Cancel') : t('Compare')}</button>}
+    </div>
+    <div className="muted small" style={{ marginBottom: 14 }}>{t('Stored only on this device — never synced, never in your backup.')}</div>
+    {!loading && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 14 }}>
+      <button onClick={() => fileRef.current.click()} aria-label={t('Add photo')}
+        style={{ aspectRatio: '3/4', borderRadius: 12, border: '1px dashed var(--sep)', background: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--label-2)' }}>
+        <Icon name="plus" style={{ fontSize: 22 }} />
+      </button>
+      {photos.map(p => <div key={p.id} style={{ position: 'relative' }} onClick={() => (selectMode ? toggleSelect(p.id) : openDetail(p))}>
+        <img src={urlFor(p)} alt="" style={{
+          width: '100%', aspectRatio: '3/4', objectFit: 'cover', borderRadius: 12, display: 'block',
+          opacity: selectMode && !selected.includes(p.id) ? 0.5 : 1,
+          outline: selected.includes(p.id) ? '2px solid var(--acc)' : 'none',
+        }} />
+        <div className="small" style={{ position: 'absolute', bottom: 4, left: 0, right: 0, textAlign: 'center', color: '#fff', textShadow: '0 1px 3px rgba(0,0,0,.8)' }}>{fmtDate(p.d)}</div>
+      </div>)}
+    </div>}
+    {!loading && photos.length === 0 && <div className="muted small" style={{ textAlign: 'center', marginBottom: 14 }}>{t('No photos yet — tap + to add one.')}</div>}
+    <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={onFile} />
+    {selectMode && selected.length === 2 && <Button variant="primary" onClick={compare}>{t('Compare selected')}</Button>}
+  </>
+}
+export const progressPhotosSheet = () => ui().openSheet(() => <ProgressPhotos />)
 
 /* ============================ exercise detail ============================ */
 // Estimated 1RM for one exercise (issue #18): what the log already implies, plus a calculator
