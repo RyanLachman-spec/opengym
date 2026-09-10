@@ -17,6 +17,17 @@
 // Apple Health is a different animal — an XML dump, often hundreds of MB — and only its
 // body-weight records are interesting here. parseBodyweight() scans for those without
 // building a DOM.
+//
+// Samsung Health and Google Fit are the same story: a general health export, of which only
+// body weight is a training record. Samsung's per-metric CSV (from Settings → Download
+// personal data, one file per data type) writes the data type as its own line 1, then a
+// header on line 2 where every column is the full type string plus a suffix
+// (com.samsung.health.weight.weight, ...create_time, ...). Columns are matched by that
+// suffix rather than the exact name, since the prefix has changed across Health versions and
+// there is no guarantee this is exhaustive — an export column that doesn't match falls
+// through to "unrecognised" rather than being misread. Google Fit's Takeout export is a
+// per-day CSV ("Daily activity metrics") with an "Average weight (kg)" column alongside
+// steps/calories; unlike Samsung, that one is a single well-known column name.
 
 import { EXDB, EXIDX } from './exercises.js'
 import { uid } from './format.js'
@@ -491,10 +502,100 @@ export function parseBodyweight(text, { unit = 'kg' } = {}) {
   }
 }
 
+const firstCol = (header, names) => {
+  for (const n of names) { const i = header.indexOf(n); if (i !== -1) return i }
+  return -1
+}
+
+/**
+ * Samsung Health's per-metric CSV (Settings → Download personal data → pick "Weight").
+ * Line 1 names the data type on its own ("com.samsung.health.weight...") — that plus the
+ * .weight/.create_time-suffixed header on line 2 is the only shape checked, so a file this
+ * doesn't recognise reports 'unrecognised' rather than importing garbage.
+ */
+export function parseSamsungHealth(text, { unit = 'kg' } = {}) {
+  const rows = parseCSV(String(text))
+  if (rows.length < 2) return { error: 'empty' }
+  if (!/^com\.samsung\.s?health\./i.test(String(rows[0][0] || '').trim())) return { error: 'unrecognised' }
+  if (rows.length < 3) return { error: 'empty' }
+  const suffix = h => String(h || '').trim().split('.').pop().toLowerCase()
+  const header = rows[1].map(suffix)
+  const weightCol = header.indexOf('weight')
+  const dateCol = firstCol(header, ['start_time', 'create_time', 'update_time'])
+  if (weightCol === -1 || dateCol === -1) return { error: 'unrecognised' }
+
+  const out = new Map()
+  for (let i = 2; i < rows.length; i++) {
+    const r = rows[i]
+    const when = parseWhen(String(r[dateCol] ?? ''))
+    const w = num(r[weightCol])
+    if (!when || !w) continue
+    out.set(when.d, { w, t: new Date(when.d).getTime() + (when.t ?? 0) })
+  }
+  if (!out.size) return { error: 'unrecognised' }
+
+  // Samsung Health stores weight in kg internally regardless of the phone's display unit.
+  const converted = unit !== 'kg'
+  const conv = converted ? x => Math.round(x / LB_TO_KG * 10) / 10 : x => Math.round(x * 10) / 10
+  const dates = [...out.keys()].sort()
+  return {
+    kind: 'bodyweight', source: 'Samsung Health',
+    bodyweight: dates.map(d => ({ d, w: conv(out.get(d).w), t: out.get(d).t || new Date(d).getTime() })),
+    fileUnit: 'kg', converted, from: dates[0], to: dates[dates.length - 1],
+  }
+}
+
+/** Header of Google Fit's Takeout "Daily activity metrics" export: an exact "Date" column
+ *  plus Google's specific "Average weight (kg)" wording — not just any weight-shaped column,
+ *  since a training-history CSV (FitNotes, Strong, Hevy) also has a plain "Date"+"Weight". */
+function looksLikeGoogleFit(header) {
+  return header.includes('date') && header.some(h => h.startsWith('average weight'))
+}
+
+/** Google Fit / Google Takeout's per-day CSV ("Takeout/Fit/Daily activity metrics/*.csv") —
+ *  one row per day, with an "Average weight (kg)" column among steps/calories/distance. Only
+ *  the weight column is read; the rest isn't a training record this app has anywhere to put. */
+export function parseGoogleFit(text, { unit = 'kg' } = {}) {
+  const rows = parseCSV(String(text))
+  if (rows.length < 2) return { error: 'empty' }
+  const header = rows[0].map(norm)
+  if (!looksLikeGoogleFit(header)) return { error: 'unrecognised' }
+  const dateCol = header.indexOf('date')
+  const weightCol = header.findIndex(h => h.startsWith('average weight'))
+  const fileUnit = /\blb\b/.test(header[weightCol]) ? 'lb' : 'kg'
+
+  const out = new Map()
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i]
+    const when = parseWhen(String(r[dateCol] ?? ''))
+    const w = num(r[weightCol])
+    if (!when || !w) continue
+    out.set(when.d, { w, t: new Date(when.d).getTime() })
+  }
+  if (!out.size) return { error: 'unrecognised' }
+
+  const converted = fileUnit !== unit
+  const conv = converted
+    ? (fileUnit === 'lb' ? x => Math.round(x * LB_TO_KG * 10) / 10 : x => Math.round(x / LB_TO_KG * 10) / 10)
+    : x => Math.round(x * 10) / 10
+  const dates = [...out.keys()].sort()
+  return {
+    kind: 'bodyweight', source: 'Google Fit',
+    bodyweight: dates.map(d => ({ d, w: conv(out.get(d).w), t: out.get(d).t })),
+    fileUnit, converted, from: dates[0], to: dates[dates.length - 1],
+  }
+}
+
 /** Sniff the file and parse it as whatever it is. */
 export function parseImport(text, opts) {
   const s = String(text)
+  if (/^com\.samsung\.s?health\./i.test(s.trim().slice(0, 60))) {
+    const p = parseSamsungHealth(s, opts)
+    if (!p.error) return p
+  }
   if (s.includes('HKQuantityTypeIdentifier') || /^\s*</.test(s)) return parseBodyweight(s, opts)
+  const asGoogleFit = parseGoogleFit(s, opts)
+  if (!asGoogleFit.error) return asGoogleFit
   const asWorkouts = parseWorkoutCSV(s, opts)
   if (!asWorkouts.error) return asWorkouts
   const asWeights = parseBodyweight(s, opts)
