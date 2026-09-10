@@ -109,6 +109,18 @@ test('equipment nobody in the library has still yields a usable library', () => 
   assert.ok(payload.librarySlice({}, ['moon rocks']).length > 0);
 });
 
+test('sore spots marked after a workout travel into the review payload', () => {
+  const S = sampleState();
+  S.workouts[0].soreness = ['lower-back', 'deltoids'];
+  const p = payload.build(S, 'u1', { kind: 'review' });
+  assert.deepEqual(p.window.workouts[0].soreness, ['lower-back', 'deltoids']);
+});
+
+test('a workout with nothing marked sore carries no soreness field at all', () => {
+  const p = payload.build(sampleState(), 'u1', { kind: 'review' });
+  assert.ok(!('soreness' in p.window.workouts[0]), 'absent, not an empty array');
+});
+
 test('declined changes are carried forward so the Coach does not nag', () => {
   const S = sampleState();
   S.coach.log = [{ decisions: [{ status: 'rejected', type: 'sets', why: 'bench accessory volume -1 set' }] }];

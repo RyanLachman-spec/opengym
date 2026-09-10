@@ -1129,9 +1129,11 @@ export const workoutCompleteSheet = () => ui().openSheet(close => <WorkoutComple
 // there and never asks twice. Stored on the finished workout itself, so a rating stays tied
 // to the session it describes rather than living in a log nothing else can see.
 function SessionRating({ w }) {
+  const st = useStore(s => s.S)
   const update = useStore(s => s.update)
   const [rating, setRating] = useState(w.rating || null)
   const [note, setNote] = useState('')
+  const [sore, setSore] = useState(new Set(w.soreness || []))
   const onWorkout = (s, fn) => { const rec = (s.workouts || []).find(x => x.id === w.id); if (rec) fn(rec) }
   const pick = v => {
     const next = v === rating ? null : v
@@ -1142,6 +1144,19 @@ function SessionRating({ w }) {
     const v = note.trim()
     if (v) rec.note = v.slice(0, 300); else delete rec.note
   }))
+  // Tapped straight onto a blank body map, separately from "what you just trained" above —
+  // load-shading and "this is sore" are two different things to say and reading both off one
+  // coloring would be confusing. Feeds the Coach's review alongside the rating (see
+  // api/coach/payload.js) — never read on its own, and only once the Coach is actually on.
+  const toggleSore = slug => {
+    const next = new Set(sore)
+    next.has(slug) ? next.delete(slug) : next.add(slug)
+    setSore(next)
+    update(s => onWorkout(s, rec => {
+      const arr = [...next]
+      if (arr.length) rec.soreness = arr; else delete rec.soreness
+    }))
+  }
   return <div style={{ textAlign: 'left', marginTop: 16 }}>
     <h4 className="sec">{t('How did that feel?')}</h4>
     <Segmented
@@ -1152,6 +1167,13 @@ function SessionRating({ w }) {
       <TextArea rows={2} maxLength={300} value={note} onChange={e => setNote(e.target.value)} onBlur={saveNote}
         placeholder={t('Anything worth remembering? (optional)')} />
     </>}
+    <div style={{ height: 14 }} />
+    <div className="row between" style={{ marginBottom: 6 }}>
+      <span className="lrow-t">{t('Anything feel sore or off?')}</span>
+      {sore.size > 0 && <span className="tag" style={{ color: 'var(--yellow)' }}>{t('{0} marked', sore.size)}</span>}
+    </div>
+    <div className="muted small" style={{ marginBottom: 8 }}>{t('Tap a spot — optional, and read alongside your rating, never alone.')}</div>
+    <BodyMap className="tappable" load={{}} body={st.body} selected={[...sore]} onMuscle={toggleSore} />
   </div>
 }
 

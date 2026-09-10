@@ -26,6 +26,10 @@ function useBodyPaths() {
   return paths
 }
 
+// `selected` is either one slug (Stats' muscle drill-down) or a list of slugs (marking more
+// than one sore spot after a workout) — one predicate covers both without the callers caring.
+const isSelected = (selected, slug) => (Array.isArray(selected) ? selected.includes(slug) : selected === slug)
+
 function View({ view, levels, onMuscle, selected }) {
   return (
     <svg className="bm-v" viewBox={view.vb} role="img">
@@ -34,7 +38,7 @@ function View({ view, levels, onMuscle, selected }) {
       {MUSCLES.map(slug => (view.p[slug] || []).map((d, i) =>
         <path
           key={slug + i}
-          className={'bm-m l' + (levels[slug] || 0) + (selected === slug ? ' sel' : '')}
+          className={'bm-m l' + (levels[slug] || 0) + (isSelected(selected, slug) ? ' sel' : '')}
           d={d}
           onClick={onMuscle ? () => onMuscle(slug) : undefined}
         >
