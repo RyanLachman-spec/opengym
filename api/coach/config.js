@@ -30,6 +30,9 @@ export const COACH_DISABLED = /^(1|true|yes|on)$/i.test(process.env.COACH_DISABL
 export const PROVIDERS = {
   claude: { label: 'Claude Code', runtime: 'Claude Agent SDK', setupToken: true, apiKeyEnv: 'ANTHROPIC_API_KEY', oauthEnv: 'CLAUDE_CODE_OAUTH_TOKEN' },
   codex: { label: 'OpenAI Codex CLI', runtime: 'OpenAI Codex CLI', deviceLogin: true, apiKeyEnv: null, oauthEnv: null },
+  // No CLI, no credential — a plain HTTP call to Ollama on this same machine. `localEndpoint`
+  // is what tells the admin UI to show a base-URL field instead of any of the account flows.
+  ollama: { label: 'Ollama (local)', runtime: 'Ollama', localEndpoint: true, apiKeyEnv: null, oauthEnv: null },
   // Test-only: drives the in-repo fixture CLI. Selectable so an instance can be exercised
   // end-to-end (and demoed) without any AI account at all.
   fixture: { label: 'Fixture (testing)', runtime: 'Fixture', apiKeyEnv: null, oauthEnv: null }
@@ -39,6 +42,7 @@ const DEFAULTS = {
   enabled: false,
   provider: 'claude',
   model: null,
+  baseUrl: null,                                  // ollama only — null ⇒ the adapter's own localhost default
   auth: null,                                    // { type:'cli-token'|'oauth'|'apikey', data:<encrypted> }
   caps: { perProfileDaily: 10, instanceDaily: 0 },   // 0 = unlimited
   log: []
@@ -151,6 +155,9 @@ export function isConnected() {
   const cfg = load();
   if (!isEnabled()) return false;
   if (cfg.provider === 'fixture') return true;
+  // No account to sign into — "ready" just means a model has actually been picked, since
+  // there is no sane default model name to fall back to on someone else's Ollama.
+  if (cfg.provider === 'ollama') return !!cfg.model;
   // Codex's ChatGPT credential remains in Codex's own auth.json cache, not coach.json.
   if (cfg.provider === 'codex') return hasCodexAuth();
   // Claude is intentionally setup-token only. Do not silently retain the old browser OAuth or

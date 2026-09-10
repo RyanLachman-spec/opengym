@@ -32,6 +32,12 @@ services:
       - PORT=3000            # internal port (nginx proxies here) — do not change
       - DATA_DIR=/data
       - COACH_CODEX_HOME=/codex
+    # Lets the Coach's Ollama adapter reach a model server running on this same host by the
+    # name `host.docker.internal`. Docker Desktop (Mac/Windows) already resolves this on its
+    # own; `host-gateway` is what makes it resolve on plain Linux Docker too. Harmless if the
+    # Coach never talks to Ollama.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/data         # users, passkeys, per-user state, session secret — BACK THIS UP
       # ChatGPT/Codex refresh tokens are kept separate from app data and mounted only into the
