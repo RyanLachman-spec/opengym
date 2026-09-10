@@ -48,6 +48,32 @@ test('review payload carries the plan, the window, effort and aggregates', () =>
   assert.ok(Array.isArray(p.library) && p.library.length > 0);
 });
 
+/* RIR/RPE self-reports track well near failure and drift wide at moderate reserve — the
+   Coach should not weigh "RIR 0" and "RIR 4" as equally trustworthy just because both are
+   numbers. This is what tells it which is which. */
+test('rated sets near failure are flagged high confidence, sets with reserve left are not', () => {
+  const base = sampleState();
+  const S = {
+    ...base,
+    workouts: [{
+      ...base.workouts[0],
+      entries: [{
+        id: '0001', target: { sets: 4, reps: 10, weight: 20 },
+        sets: [
+          { w: 20, r: 10, done: true, rir: 0 },   // failure — high confidence
+          { w: 20, r: 10, done: true, rir: 1 },   // still near failure — high confidence
+          { w: 20, r: 10, done: true, rir: 4 },   // moderate reserve — low confidence
+          { w: 20, r: 10, done: true, rpe: 9 },   // near-max on the other scale — high confidence
+          { w: 20, r: 10, done: true, rpe: 7 },   // moderate on the other scale — low confidence
+          { w: 20, r: 10, done: true }            // nothing rated — no claim either way
+        ]
+      }]
+    }]
+  };
+  const sets = payload.build(S, 'u1', { kind: 'review' }).window.workouts[0].entries[0].sets;
+  assert.deepEqual(sets.map(s => s.effortConfidence), ['high', 'high', 'low', 'high', 'low', undefined]);
+});
+
 test('a stalling exercise shows up in the aggregates the way the engine counts it', () => {
   const S = sampleState();
   // Three sessions that all fell short of the 10-rep target.

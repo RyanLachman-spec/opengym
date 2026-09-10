@@ -75,6 +75,20 @@ export function stallCount(sessions) {
   return n;
 }
 
+/* ---------- effort confidence ----------
+   Self-reported RIR/RPE tracks actual reps-in-reserve closely near failure but drifts wide
+   at moderate reserve — lifters are consistently accurate at RIR 0-1 and consistently
+   optimistic from RIR 3 up (the same gap shows as RPE ≤7). Rather than have the Coach weigh
+   every rating the same, each rated set is tagged with how far to trust it, so a stall read
+   against "RIR 1, high confidence" carries more than one read against "RIR 4, low confidence".
+   Purely a read of a number already in the payload under the 'training' category (FR-09/10) —
+   no new data leaves the device, so this needs no consent-version bump. */
+function effortConfidence(rir, rpe) {
+  if (rir != null) return rir <= 1 ? 'high' : 'low';
+  if (rpe != null) return rpe >= 9 ? 'high' : 'low';
+  return null;
+}
+
 /* ---------- plan cleaning (mirrors plan-share.js cleanEx) ---------- */
 function cleanEx(e) {
   const o = { id: e.id, name: LIB_BY_ID.get(e.id)?.n || null, sets: e.sets };
@@ -228,6 +242,8 @@ function cleanWorkout(w) {
         if (s.speed != null) o.speed = s.speed;
         if (s.rir != null) o.rir = s.rir;
         if (s.rpe != null) o.rpe = s.rpe;
+        const conf = effortConfidence(s.rir, s.rpe);
+        if (conf) o.effortConfidence = conf;
         return o;
       })
     }))
