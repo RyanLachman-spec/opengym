@@ -16,6 +16,9 @@ export const DEF = {
   // server pull, backup import) still falls back to the `showRir` boolean this replaced and
   // keeps the column it had. See effortOf.
   reminder: { on: false, time: '08:00', tz: null }, effort: null,
+  // Plate calculator: null bar/set means "use the standard kg/lb defaults" — most profiles
+  // never open the config sheet, so this stays absent rather than pre-filled per unit.
+  plateBar: null, plateSet: null,
   // AI Coach (issue: AI enablement). null until the profile opts in — a null namespace is the
   // same app it was before the feature existed, which is what Epic F asks for. Shape and
   // bounds live in lib/coach.js.

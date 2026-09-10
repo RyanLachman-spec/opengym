@@ -20,6 +20,7 @@ import { buildPlanBundle, parsePlan, mergePlan, printPlan } from './lib/plan-sha
 import { estimate1RM, best1RM, is1RMRecord, REP_CAP } from './lib/onerm.js'
 import { nextPrescription, applyPrescription, policyFor, defaultIncrement, POLICIES_FOR, POLICY_NAME, POLICY_DESC } from './lib/progression.js'
 import { MOBILE, shareExport } from './lib/mobile.js'
+import { calcPlates, barOf, plateSetOf, plateLabel, DEFAULT_SET } from './lib/plates.js'
 
 const S = () => useStore.getState().S
 const update = (...a) => useStore.getState().update(...a)
@@ -250,6 +251,67 @@ function GoalSheet({ close }) {
   </>
 }
 export const goalSheet = () => ui().openSheet(close => <GoalSheet close={close} />)
+
+/* ============================ plate calculator ============================ */
+// What to load per side for a given bar weight (issue: feature request). Bar + available
+// plates are per-profile, not per-set — most people train at one gym — so they're edited
+// through their own small sheet rather than re-entered every time the calculator opens.
+function PlateConfigSheet({ close }) {
+  const st = useStore(s => s.S)
+  const unit = st.unit
+  const all = DEFAULT_SET[unit] || DEFAULT_SET.kg
+  const [bar, setBar] = useState(barOf(st))
+  const [have, setHave] = useState(new Set(plateSetOf(st)))
+  const toggle = p => setHave(h => { const n = new Set(h); n.has(p) ? n.delete(p) : n.add(p); return n })
+  const save = () => {
+    update(s => { s.plateBar = bar || null; s.plateSet = all.filter(p => have.has(p)) })
+    close()
+  }
+  return <>
+    <h3>{t('Bar & plates')}</h3>
+    <div className="muted small" style={{ marginBottom: 14 }}>{t('What this gym actually has — the calculator only suggests plates you keep checked here.')}</div>
+    <Stepper label={t('Bar weight ({0})', unit)} value={bar} step={unit === 'lb' ? 5 : 2.5} onChange={setBar} />
+    <div style={{ height: 14 }} />
+    <div className="muted small" style={{ marginBottom: 8 }}>{t('Plates available')}</div>
+    <div className="chips" style={{ flexWrap: 'wrap' }}>
+      {all.map(p => <button key={p} className={'chip' + (have.has(p) ? ' on' : '')} onClick={() => toggle(p)}>{plateLabel(p)}</button>)}
+    </div>
+    <div style={{ height: 16 }} />
+    <Button variant="primary" onClick={save}>{t('Save')}</Button>
+  </>
+}
+
+function PlateCalc({ startWeight }) {
+  const st = useStore(s => s.S)
+  const bar = barOf(st)
+  const [w, setW] = useState(startWeight > 0 ? startWeight : bar)
+  const set = plateSetOf(st)
+  const r = calcPlates(w, { bar, set })
+  return <>
+    <div className="row between" style={{ marginBottom: 2 }}>
+      <h3 style={{ margin: 0 }}>{t('Plate calculator')}</h3>
+      <button className="iconbtn" aria-label={t('Bar & plates')} onClick={() => ui().openSheet(c => <PlateConfigSheet close={c} />)}><Icon name="gear" /></button>
+    </div>
+    <WeightInput value={w} setValue={setW} unit={st.unit} />
+    <div style={{ height: 10 }} />
+    <div className="row between" style={{ marginBottom: 10 }}>
+      <span className="muted small">{t('Bar')}</span><b>{fmtNum(bar)} {st.unit}</b>
+    </div>
+    {r.perSide.length ? <div className="chips" style={{ justifyContent: 'center', flexWrap: 'wrap' }}>
+      {r.perSide.flatMap(p => Array.from({ length: p.count }, (_, i) => (
+        <span key={p.plate + '-' + i} className="mchip" style={{ fontSize: 15, padding: '8px 15px' }}>{plateLabel(p.plate)}</span>
+      )))}
+    </div> : <div className="muted small" style={{ textAlign: 'center' }}>{t('Just the bar.')}</div>}
+    <div className="small dim" style={{ textAlign: 'center', marginTop: 10 }}>{t('Per side, bar to collar.')}</div>
+    {r.diff < -0.01 && <div className="small" style={{ color: 'var(--yellow)', textAlign: 'center', marginTop: 8 }}>
+      {t('Below the bar — the lightest you can load is {0} {1}.', fmtNum(bar), st.unit)}
+    </div>}
+    {r.diff > 0.01 && <div className="small" style={{ color: 'var(--yellow)', textAlign: 'center', marginTop: 8 }}>
+      {t('Closest with these plates: {0} {1} ({2} short)', fmtNum(r.achieved), st.unit, fmtNum(r.diff))}
+    </div>}
+  </>
+}
+export const plateCalcSheet = startWeight => ui().openSheet(() => <PlateCalc startWeight={startWeight} />)
 
 /* ============================ exercise detail ============================ */
 // Estimated 1RM for one exercise (issue #18): what the log already implies, plus a calculator
