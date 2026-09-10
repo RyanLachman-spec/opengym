@@ -11,6 +11,7 @@ import { t, LANGS, INSTR_LANGS } from '../lib/i18n.js'
 import { DEMO, REPO } from '../lib/demo.js'
 import { MOBILE, shareExport, syncReminder } from '../lib/mobile.js'
 import { loadStarterPlan, confirmSheet, importFromApp, equipmentPresetsSheet, progressPhotosSheet, shareProgressSheet } from '../sheets.jsx'
+import { buildAppleHealthXML } from '../lib/export-health.js'
 import { coachAvailable, hasConsent } from '../lib/coach.js'
 import { forgetCoach } from '../lib/coach-api.js'
 import Icon from '../components/Icon.jsx'
@@ -38,6 +39,21 @@ export default function Settings() {
     const blob = new Blob([json], { type: 'application/json' })
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); URL.revokeObjectURL(a.href)
     toast(t('Backup exported'))
+  }
+  // The mirror of "Import from another app" — body weight OUT, in the same Apple Health XML
+  // shape that importer (and Apple Health, Health Connect, most trackers) can read back in.
+  // Not a lock-in play: leaving openGym shouldn't mean losing your weigh-in history.
+  const doExportHealth = async () => {
+    if (!S.bodyweight.length) { toast(t('No body weight logged yet')); return }
+    const xml = buildAppleHealthXML(S)
+    const name = 'opengym-bodyweight-' + todayISO() + '.xml'
+    if (MOBILE) {
+      try { await shareExport(xml, name); toast(t('Body weight exported')) } catch (e) { /* share sheet dismissed */ }
+      return
+    }
+    const blob = new Blob([xml], { type: 'application/xml' })
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); URL.revokeObjectURL(a.href)
+    toast(t('Body weight exported'))
   }
   const doImport = ev => {
     const f = ev.target.files[0]; if (!f) return
@@ -200,6 +216,8 @@ export default function Settings() {
         accessory="chevron" onClick={() => importRef.current.click()} />
       <Row icon="upload" iconTint="var(--blue)" title={t('Import backup')} accessory="chevron" onClick={() => fileRef.current.click()} />
       <Row icon="download" iconTint="var(--blue)" title={t('Export backup (JSON)')} accessory="chevron" onClick={doExport} />
+      <Row icon="upload" iconTint="var(--teal)" title={t('Export body weight (Apple Health)')}
+        subtitle={t('For Apple Health, Health Connect, or another tracker')} accessory="chevron" onClick={doExportHealth} />
       {/* Also drops anything the Coach is holding server-side: a wipe that leaves a pending
           proposal on the server behind would be a wipe in name only. */}
       <Row icon="trash" iconTint="var(--red)" title={t('Reset everything')} danger onClick={() => confirmSheet({ title: t('Reset everything?'), message: t('Deletes your plan, workouts and body weight on this device. This cannot be undone.'), confirmText: t('Delete everything'), danger: true, onConfirm: () => { if (user) forgetCoach().catch(() => {}); replaceState(JSON.parse(JSON.stringify(DEF)), true); nav('/home'); toast(t('All data reset')) } })} />
