@@ -145,7 +145,8 @@ export default function Settings() {
     <Section title={t('During a workout')} footer={wakeOK ? t('The screen stays on while a workout is running, so you don’t have to unlock your phone between sets.') : null}>
       <SelectRow icon="timer" iconTint="var(--orange)" title={t('Rest timer')}
         value={S.restSec} onChange={v => update(s => { s.restSec = v })}
-        options={[60, 90, 120, 150, 180].map(v => ({ value: v, label: v + 's' }))} />
+        options={[60, 90, 120, 150, 180].map(v => ({ value: v, label: v + 's' }))}
+        note={t('The studies disagree on the exact optimum, but agree on this: resting under ~60s consistently costs hypertrophy compared to longer rests. A 2016 trial found 3 minutes beat 1 minute over 8 weeks; a 2024 meta-analysis of the evidence since favors 60–90s and up. Shorter isn’t free time saved — it’s volume you can’t sustain in later sets.')} />
       {(wakeOK || !MOBILE) && (
         <Row icon="sun" iconTint="var(--yellow)" title={t('Keep screen awake')}
           subtitle={wakeOK ? null : t('Not supported in this browser.')}>

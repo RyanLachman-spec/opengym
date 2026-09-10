@@ -139,3 +139,34 @@ export function rankOf(load) {
   const missed = MUSCLES.filter(m => !(load[m] > 0))
   return { worked, missed }
 }
+
+// The two numbers the actual evidence points at, not a fixed rule: roughly 10-20 hard sets a
+// week per muscle for most trained lifters (diminishing, highly individual returns above
+// that — MEV/MAV/MRV are useful starting guides, not thresholds anyone validated as exact),
+// and at least 2 distinct days a week beats 1 at equal volume for hypertrophy (Schoenfeld &
+// Grgic 2018/2019 meta-analyses).
+export const SETS_GUIDELINE = { low: 10, high: 20 }
+export const FREQUENCY_GUIDELINE = 2
+
+/**
+ * Sets/week and distinct training days/week per muscle, from the *planned* weekly schedule
+ * (S.week × S.routines) — not the training log. Answers "as planned, is this balanced" while
+ * you're still building the week, before a single session has happened.
+ */
+export function weeklyPlanLoad(S) {
+  const days = Object.entries(S.week || {}).filter(([, rid]) => rid && S.routines?.some(r => r.id === rid))
+  const bySlug = {}
+  days.forEach(([day, rid]) => {
+    const r = S.routines.find(x => x.id === rid)
+    const load = loadOfRoutine(r)
+    for (const slug in load) {
+      if (!load[slug]) continue
+      if (!bySlug[slug]) bySlug[slug] = { sets: 0, days: new Set() }
+      bySlug[slug].sets += load[slug]
+      bySlug[slug].days.add(day)
+    }
+  })
+  const out = {}
+  for (const slug in bySlug) out[slug] = { sets: Math.round(bySlug[slug].sets * 10) / 10, days: bySlug[slug].days.size }
+  return { byMuscle: out, plannedDays: days.length }
+}

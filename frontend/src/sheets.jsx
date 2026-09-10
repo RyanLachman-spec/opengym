@@ -17,7 +17,7 @@ import BodyMap from './components/BodyMap.jsx'
 import { loadOfWorkouts } from './lib/muscles.js'
 import { parseImport, mergeImport } from './lib/import-csv.js'
 import { buildPlanBundle, parsePlan, mergePlan, printPlan } from './lib/plan-share.js'
-import { estimate1RM, best1RM, is1RMRecord, REP_CAP } from './lib/onerm.js'
+import { estimate1RMRange, best1RM, is1RMRecord, REP_CAP } from './lib/onerm.js'
 import { nextPrescription, applyPrescription, policyFor, defaultIncrement, POLICIES_FOR, POLICY_NAME, POLICY_DESC } from './lib/progression.js'
 import { MOBILE, shareExport } from './lib/mobile.js'
 import { calcPlates, barOf, plateSetOf, plateLabel, DEFAULT_SET } from './lib/plates.js'
@@ -512,6 +512,22 @@ function ShareProgressSheet() {
 }
 export const shareProgressSheet = () => ui().openSheet(() => <ShareProgressSheet />)
 
+/* ============================ muscle balance ============================ */
+export function muscleBalanceInfoSheet() {
+  ui().openSheet(() => <>
+    <h3>{t('Muscle balance')}</h3>
+    <div className="muted small" style={{ lineHeight: 1.5, marginBottom: 12 }}>
+      {t('From your current weekly schedule — the plan, not the log. Two things the research keeps coming back to:')}
+    </div>
+    <div className="small" style={{ lineHeight: 1.6, marginBottom: 10 }}>
+      <b>{t('Sets per week')}</b> — {t('roughly 10–20 hard sets a week per muscle covers most trained lifters, with real but shrinking returns above that. Highly individual — a starting range, not a target.')}
+    </div>
+    <div className="small" style={{ lineHeight: 1.6 }}>
+      <b>{t('Training days')}</b> — {t('hitting a muscle at least twice a week has outperformed once a week at equal volume in the meta-analyses that looked. Flagged only when your week already has the days to spread it across.')}
+    </div>
+  </>)
+}
+
 /* ============================ exercise detail ============================ */
 // Estimated 1RM for one exercise (issue #18): what the log already implies, plus a calculator
 // for a set you have not done — so the number is reachable before there is any history.
@@ -520,7 +536,11 @@ function OneRM({ ex }) {
   const best = best1RM(st, ex.id)
   const [w, setW] = useState(best ? best.w : (st.exWeights[ex.id] || {}).w || 20)
   const [r, setR] = useState(best ? best.r : 5)
-  const est = estimate1RM(w, r)
+  const range = estimate1RMRange(w, r)
+  // Three published formulas (Epley, Brzycki, Lombardi) agree closely at low reps and spread
+  // apart as reps rise — the estimate is their average, and the spread is shown rather than
+  // hidden, so "142 kg" doesn't imply a precision none of the underlying formulas has earned.
+  const spread = range && range.high - range.low > 0.5
   return <>
     <h4 className="sec">{t('Estimated 1RM')}</h4>
     {best && <div className="small" style={{ marginBottom: 8 }}>
@@ -533,11 +553,13 @@ function OneRM({ ex }) {
     </div>
     <div className="row between" style={{ marginBottom: 4 }}>
       <span className="muted small">{t('Estimate')}</span>
-      <b className="accent" style={{ fontSize: 20 }}>{est === null ? '—' : fmtNum(est) + ' ' + st.unit}</b>
+      <b className="accent" style={{ fontSize: 20 }}>{range === null ? '—' : fmtNum(range.est) + ' ' + st.unit}</b>
     </div>
-    <div className="small dim">{est === null
+    <div className="small dim">{range === null
       ? t('Enter a weight and 1–{0} reps — beyond that an estimate is guesswork.', REP_CAP)
-      : t('Epley formula — a calculation from one set, not a tested max.')}</div>
+      : spread
+        ? t('Average of three formulas — anywhere from {0} to {1} {2}, not a tested max.', fmtNum(range.low), fmtNum(range.high), st.unit)
+        : t('Average of three formulas — a calculation from one set, not a tested max.')}</div>
   </>
 }
 
