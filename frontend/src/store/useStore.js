@@ -27,7 +27,12 @@ export const DEF = {
   // AI Coach (issue: AI enablement). null until the profile opts in — a null namespace is the
   // same app it was before the feature existed, which is what Epic F asks for. Shape and
   // bounds live in lib/coach.js.
-  coach: null
+  coach: null,
+  // Food diary (issue: feature request — "food metric like MyFitnessPal"). foodLog is a flat
+  // list of logged entries (see lib/food.js#makeEntry), matching how bodyweight/workouts are
+  // stored. foodProfile is null until the person fills in height/age/activity — nutrition
+  // targets need it and stay unavailable (not guessed at) until they do; see lib/food.js#nutritionTargets.
+  foodLog: [], foodProfile: null
 }
 const clone = o => JSON.parse(JSON.stringify(o))
 
@@ -39,7 +44,7 @@ function loadState() {
   return clone(DEF)
 }
 
-const hasData = st => !!((st.workouts || []).length || (st.routines || []).length || (st.bodyweight || []).length)
+const hasData = st => !!((st.workouts || []).length || (st.routines || []).length || (st.bodyweight || []).length || (st.foodLog || []).length)
 
 export const useStore = create((set, get) => {
   let pushTm = null

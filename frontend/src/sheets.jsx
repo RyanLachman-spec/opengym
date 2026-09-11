@@ -11,7 +11,7 @@ import { starterRoutines } from './lib/starter.js'
 import Media, { Thumb } from './components/Media.jsx'
 import Stepper from './components/Stepper.jsx'
 import Icon from './components/Icon.jsx'
-import { Button, Slider, Switch, Segmented, SelectRow, TextArea, TextField } from './components/ui.jsx'
+import { Button, Slider, Switch, Segmented, SelectRow, TextArea, TextField, Row, SearchField } from './components/ui.jsx'
 import { glyphOf, GLYPH_GROUPS, DEFAULT_GLYPH } from './lib/glyphs.js'
 import BodyMap from './components/BodyMap.jsx'
 import { loadOfWorkouts } from './lib/muscles.js'
@@ -23,6 +23,7 @@ import { MOBILE, shareExport } from './lib/mobile.js'
 import { calcPlates, barOf, plateSetOf, plateLabel, DEFAULT_SET } from './lib/plates.js'
 import { addPhoto, listPhotos, deletePhoto } from './lib/photos.js'
 import { api } from './lib/api.js'
+import { searchFood, lookupBarcode, makeEntry, nutritionTargets, ACTIVITY } from './lib/food.js'
 
 const S = () => useStore.getState().S
 const update = (...a) => useStore.getState().update(...a)
@@ -1265,4 +1266,194 @@ function doFinishWorkout() {
   useUI.getState().stopRest()
   beep(snd(), 880, 0.15); beep(snd(), 1100, 0.15, 0.18); beep(snd(), 1320, 0.3, 0.36)
   ui().openSheet(close => <FinishSummary w={w} prs={prs} e1prs={e1prs} close={close} />, { kind: 'center', locked: true })
+}
+
+/* ============================ food diary ============================ */
+
+export function deleteFoodEntry(id) {
+  update(s => { s.foodLog = (s.foodLog || []).filter(e => e.id !== id) })
+}
+
+// Scales one product's per-100g figures to the grams actually eaten, then logs it.
+function FoodQuantitySheet({ product, day, close, onSaved }) {
+  const [g, setG] = useState(100)
+  const grams = Math.max(0, g || 0)
+  const f = grams / 100
+  const save = () => {
+    update(s => { (s.foodLog || (s.foodLog = [])).push(makeEntry(product, grams, day, uid())) })
+    close()
+    onSaved && onSaved()
+    toast(t('{0} logged', product.name))
+  }
+  return <>
+    <h3>{product.name}</h3>
+    {product.brand && <div className="muted small">{product.brand}</div>}
+    <div style={{ height: 10 }} />
+    <Stepper label={t('Grams')} value={g} step={10} decimal={false} onChange={setG} />
+    <div style={{ height: 14 }} />
+    <div className="tiles">
+      <div className="tile"><div className="l">{t('Calories')}</div><div className="v" style={{ fontSize: '1.1rem' }}>{fmtNum(product.per100.kcal * f)}</div></div>
+      <div className="tile"><div className="l">{t('Protein')}</div><div className="v" style={{ fontSize: '1.1rem' }}>{fmtNum(product.per100.protein * f)}g</div></div>
+      <div className="tile"><div className="l">{t('Carbs')}</div><div className="v" style={{ fontSize: '1.1rem' }}>{fmtNum(product.per100.carbs * f)}g</div></div>
+      <div className="tile"><div className="l">{t('Fat')}</div><div className="v" style={{ fontSize: '1.1rem' }}>{fmtNum(product.per100.fat * f)}g</div></div>
+    </div>
+    <Button variant="primary" onClick={save} disabled={!grams}>{t('Add to log')}</Button>
+  </>
+}
+export function foodQuantitySheet(product, day, onSaved) {
+  ui().openSheet(close => <FoodQuantitySheet product={product} day={day} close={close} onSaved={onSaved} />)
+}
+
+// Camera barcode scan, via a dynamic import — @zxing/browser is sizeable and this is the
+// only place that needs it, so it stays out of the main bundle until someone taps "scan".
+function BarcodeScanSheet({ onFound, close }) {
+  const videoRef = useRef(null)
+  const [status, setStatus] = useState('starting') // starting | scanning | error
+
+  useEffect(() => {
+    let stopped = false
+    let controls = null
+    import('@zxing/browser').then(({ BrowserMultiFormatReader }) => {
+      if (stopped) return
+      const reader = new BrowserMultiFormatReader()
+      reader.decodeFromConstraints({ video: { facingMode: 'environment' } }, videoRef.current, (result) => {
+        if (stopped || !result) return
+        stopped = true
+        controls?.stop()
+        onFound(result.getText())
+      }).then(c => { if (stopped) c.stop(); else { controls = c; setStatus('scanning') } })
+        .catch(() => setStatus('error'))
+    }).catch(() => setStatus('error'))
+    return () => { stopped = true; controls?.stop() }
+  }, [onFound])
+
+  return <>
+    <h3>{t('Scan barcode')}</h3>
+    {status === 'error' ? (
+      <div className="muted small" style={{ marginBottom: 12 }}>{t('Could not access the camera — check permissions, or search by name instead.')}</div>
+    ) : <>
+      <div style={{ borderRadius: 'var(--r-card)', overflow: 'hidden', background: '#000', marginBottom: 10 }}>
+        <video ref={videoRef} style={{ width: '100%', display: 'block', aspectRatio: '4 / 3', objectFit: 'cover' }} muted playsInline />
+      </div>
+      <div className="muted small" style={{ textAlign: 'center', marginBottom: 10 }}>{t('Point the camera at the barcode.')}</div>
+    </>}
+    <Button variant="ghost" className="dim" onClick={close}>{t('Cancel')}</Button>
+  </>
+}
+
+// Free-text search against Open Food Facts, or a barcode scan — either way ends at
+// foodQuantitySheet, which is the only place an entry actually gets logged.
+function FoodSearchSheet({ day, close }) {
+  const lang = useStore(s => s.S.lang) || 'en'
+  const [q, setQ] = useState('')
+  const [results, setResults] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState(false)
+
+  useEffect(() => {
+    const query = q.trim()
+    if (!query) { setResults([]); setErr(false); setLoading(false); return }
+    setLoading(true)
+    const ctrl = new AbortController()
+    const tm = setTimeout(() => {
+      searchFood(query, lang, { signal: ctrl.signal })
+        .then(r => { setResults(r); setErr(false) })
+        .catch(e => { if (e.name !== 'AbortError') setErr(true) })
+        .finally(() => setLoading(false))
+    }, 400)
+    return () => { clearTimeout(tm); ctrl.abort() }
+  }, [q, lang])
+
+  const pick = product => foodQuantitySheet(product, day, close)
+
+  const scan = () => {
+    const scanH = ui().openSheet(sclose => <BarcodeScanSheet close={sclose} onFound={async code => {
+      sclose()
+      try {
+        const product = await lookupBarcode(code, lang)
+        if (product) pick(product)
+        else toast(t('No match for that barcode — try searching by name'))
+      } catch (e) { toast(t('Could not look that up — check your connection')) }
+    }} />)
+    return scanH
+  }
+
+  return <>
+    <h3>{t('Add food')}</h3>
+    <div className="row" style={{ gap: 8, marginBottom: 12 }}>
+      <div style={{ flex: 1 }}><SearchField value={q} onChange={e => setQ(e.target.value)} onClear={() => setQ('')} placeholder={t('Search food…')} autoFocus /></div>
+      <button className="iconbtn" onClick={scan} aria-label={t('Scan barcode')}><Icon name="barcode" /></button>
+    </div>
+    {loading && <div className="muted small">{t('Searching…')}</div>}
+    {!loading && err && <div className="muted small">{t('Search failed — check your connection and try again.')}</div>}
+    {!loading && !err && !!q.trim() && !results.length && <div className="muted small">{t('No match')}</div>}
+    {!!results.length && <div className="list">
+      {results.map((p, i) => <div key={(p.barcode || '') + i} className="item" onClick={() => pick(p)}>
+        <div className="grow"><div className="tt">{p.name}</div><div className="ss">{p.brand ? p.brand + ' · ' : ''}{fmtNum(p.per100.kcal)} kcal/100g</div></div>
+        <Icon name="chevronRight" className="chev" />
+      </div>)}
+    </div>}
+  </>
+}
+export function foodSearchSheet(day) {
+  ui().openSheet(close => <FoodSearchSheet day={day} close={close} />)
+}
+
+/* ---- nutrition targets: profile inputs + the science behind the numbers ----
+ * See lib/food.js#nutritionTargets for the citations (Mifflin-St Jeor, Garthe et al. 2011,
+ * ISSN's protein position stand) — kept next to the formula rather than duplicated here. */
+function FoodProfileSheet({ close }) {
+  const st = useStore(s => s.S)
+  const p = st.foodProfile || {}
+  const [height, setHeight] = useState(p.heightCm || 175)
+  const [age, setAge] = useState(p.age || 30)
+  const [activity, setActivity] = useState(p.activity in ACTIVITY ? p.activity : 'moderate')
+  // Labels for every key ACTIVITY (lib/food.js) actually defines — a level added there
+  // without a line here still shows up, just under its raw key, instead of vanishing.
+  const ACTIVITY_LABEL = {
+    sedentary: [t('Sedentary'), t('Little or no exercise, desk job')],
+    light: [t('Light activity'), t('Light exercise 1–3 days a week')],
+    moderate: [t('Moderate'), t('Moderate exercise 3–5 days a week')],
+    active: [t('Active'), t('Hard exercise 6–7 days a week')],
+    veryActive: [t('Very active'), t('Hard daily exercise plus a physical job')]
+  }
+  const activityOptions = Object.keys(ACTIVITY).map(k => ({ value: k, label: (ACTIVITY_LABEL[k] || [k])[0], subtitle: (ACTIVITY_LABEL[k] || [])[1] }))
+  const save = () => {
+    update(s => { s.foodProfile = { heightCm: Math.round(height) || null, age: Math.round(age) || null, activity } })
+    close()
+    toast(t('Nutrition targets updated'))
+  }
+  return <>
+    <h3>{t('Nutrition targets')}</h3>
+    <div className="muted small" style={{ marginBottom: 12 }}>{t('Used to work out a calorie and macro target from your body and your weight goal — tap the (i) on the Food screen for how.')}</div>
+    <Stepper label={t('Height (cm)')} value={height} step={1} decimal={false} onChange={setHeight} />
+    <Stepper label={t('Age')} value={age} step={1} decimal={false} onChange={setAge} />
+    <Row icon="person" title={t('Sex (for the calorie formula)')}>
+      <Segmented className="seg-inline"
+        options={[{ value: 'male', label: t('Male') }, { value: 'female', label: t('Female') }]}
+        value={st.body === 'female' ? 'female' : 'male'} onChange={v => update(s => { s.body = v })} />
+    </Row>
+    <SelectRow icon="flame" iconTint="var(--orange)" title={t('Activity level')}
+      value={activity} onChange={setActivity} options={activityOptions} />
+    <div style={{ height: 14 }} />
+    <Button variant="primary" onClick={save}>{t('Save')}</Button>
+  </>
+}
+export const foodProfileSheet = () => ui().openSheet(close => <FoodProfileSheet close={close} />)
+
+export function foodTargetsInfoSheet() {
+  const tg = nutritionTargets(S())
+  ui().openSheet(() => <>
+    <h3>{t('Your calorie & macro target')}</h3>
+    <div className="muted small" style={{ lineHeight: 1.5, marginBottom: 12 }}>
+      {t('Resting energy comes from the Mifflin-St Jeor equation — found unbiased and the most accurate of the standard predictive formulas against measured metabolic rate. Your activity level scales that up to a daily total.')}
+    </div>
+    <div className="small" style={{ lineHeight: 1.6, marginBottom: 10 }}>
+      <b>{t('The calorie target')}</b> — {t('that total, adjusted by 0.7% of your body weight a week toward your goal — the rate that built or preserved muscle in a head-to-head trial against a faster rate in trained athletes. Never set below what your body burns at rest.')}
+    </div>
+    <div className="small" style={{ lineHeight: 1.6 }}>
+      <b>{t('Protein and fat')}</b> — {t('protein sits inside the range sports-nutrition research supports for holding onto muscle — higher while your target is below maintenance — and fat is never let drop below what hormonal health needs. Carbs fill whatever is left.')}
+    </div>
+    {tg && <div className="muted small" style={{ marginTop: 12 }}>{t('Right now: resting {0} kcal · daily total {1} kcal.', fmtNum(tg.rmr), fmtNum(tg.tdee))}</div>}
+  </>)
 }
