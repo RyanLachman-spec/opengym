@@ -1343,6 +1343,12 @@ function BarcodeScanSheet({ onFound, close }) {
 
 // Free-text search against Open Food Facts, or a barcode scan — either way ends at
 // foodQuantitySheet, which is the only place an entry actually gets logged.
+// A bare run of 6-14 digits is a barcode typed by hand, not a product name — Open Food
+// Facts' free-text search does not reliably match a code as text, but its direct barcode
+// lookup does. Try that first and only fall back to text search if it comes up empty (the
+// digits might still be part of a real product name).
+const looksLikeBarcode = q => /^\d{6,14}$/.test(q)
+
 function FoodSearchSheet({ day, close }) {
   const lang = useStore(s => s.S.lang) || 'en'
   const [q, setQ] = useState('')
@@ -1356,7 +1362,10 @@ function FoodSearchSheet({ day, close }) {
     setLoading(true)
     const ctrl = new AbortController()
     const tm = setTimeout(() => {
-      searchFood(query, lang, { signal: ctrl.signal })
+      const run = looksLikeBarcode(query)
+        ? lookupBarcode(query, lang, { signal: ctrl.signal }).then(p => p ? [p] : searchFood(query, lang, { signal: ctrl.signal }))
+        : searchFood(query, lang, { signal: ctrl.signal })
+      run
         .then(r => { setResults(r); setErr(false) })
         .catch(e => { if (e.name !== 'AbortError') setErr(true) })
         .finally(() => setLoading(false))
