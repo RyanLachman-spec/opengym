@@ -16,10 +16,23 @@ export const DEF = {
   // server pull, backup import) still falls back to the `showRir` boolean this replaced and
   // keeps the column it had. See effortOf.
   reminder: { on: false, time: '08:00', tz: null }, effort: null,
+  // Plate calculator: null bar/set means "use the standard kg/lb defaults" — most profiles
+  // never open the config sheet, so this stays absent rather than pre-filled per unit.
+  plateBar: null, plateSet: null,
+  // Gym equipment presets (issue: feature request) — "what this gym actually has", named so
+  // a traveller can switch between e.g. Home and Hotel. activeEquipment is a preset id or
+  // null ("everything" — the app's original, unfiltered behavior). Presets are also offered
+  // as a one-tap prefill for the Coach intake's own equipment question.
+  equipmentPresets: [], activeEquipment: null,
   // AI Coach (issue: AI enablement). null until the profile opts in — a null namespace is the
   // same app it was before the feature existed, which is what Epic F asks for. Shape and
   // bounds live in lib/coach.js.
-  coach: null
+  coach: null,
+  // Food diary (issue: feature request — "food metric like MyFitnessPal"). foodLog is a flat
+  // list of logged entries (see lib/food.js#makeEntry), matching how bodyweight/workouts are
+  // stored. foodProfile is null until the person fills in height/age/activity — nutrition
+  // targets need it and stay unavailable (not guessed at) until they do; see lib/food.js#nutritionTargets.
+  foodLog: [], foodProfile: null
 }
 const clone = o => JSON.parse(JSON.stringify(o))
 
@@ -31,7 +44,7 @@ function loadState() {
   return clone(DEF)
 }
 
-const hasData = st => !!((st.workouts || []).length || (st.routines || []).length || (st.bodyweight || []).length)
+const hasData = st => !!((st.workouts || []).length || (st.routines || []).length || (st.bodyweight || []).length || (st.foodLog || []).length)
 
 export const useStore = create((set, get) => {
   let pushTm = null

@@ -49,6 +49,7 @@ let db = { users: [], creds: [], subs: [], invites: [] };
 try { db = JSON.parse(fs.readFileSync(dbFile, 'utf8')); } catch {}
 db.subs = db.subs || [];
 db.invites = db.invites || [];
+db.shares = db.shares || [];
 const isAdmin = user => !!user && (user.admin === true || ADMIN_UIDS.includes(user.id));
 function saveDb() { atomicWrite(dbFile, JSON.stringify(db, null, 2)); }
 function atomicWrite(file, content) {
@@ -249,6 +250,71 @@ function readBody(req) {
   });
 }
 const b64uToBuf = s => Buffer.from(s, 'base64url');
+
+/* ---------- share link summary ---------- */
+const SHARE_DEFAULT_DAYS = 7;
+const SHARE_MAX_DAYS = 30;
+
+function activeShareFor(userId) {
+  const s = db.shares.find(x => x.userId === userId);
+  if (!s) return null;
+  if (s.expiresAt < Date.now()) { db.shares = db.shares.filter(x => x !== s); saveDb(); return null; }
+  return s;
+}
+
+// Duplicated (not imported) from frontend/src/lib/format.js and lib/history.js — tiny pure
+// helpers, not worth sharing across the two runtimes (see effectiveRoutineId above for the
+// same call).
+function isoOf(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function weekKey(d) {
+  const dt = new Date(d + 'T12:00:00');
+  const day = (dt.getDay() + 6) % 7;
+  dt.setDate(dt.getDate() - day + 3);
+  const jan4 = new Date(dt.getFullYear(), 0, 4);
+  const week = 1 + Math.round(((dt - jan4) / 86400000 - 3 + ((jan4.getDay() + 6) % 7)) / 7);
+  return dt.getFullYear() + '-' + week;
+}
+function streakWeeksOf(workouts) {
+  if (!workouts.length) return 0;
+  const weeks = new Set(workouts.map(w => weekKey(w.d)));
+  let streak = 0;
+  const cur = new Date();
+  for (let i = 0; i < 520; i++) {
+    const wk = weekKey(isoOf(cur));
+    if (weeks.has(wk)) streak++;
+    else if (i > 0) break;
+    cur.setDate(cur.getDate() - 7);
+  }
+  return streak;
+}
+
+// What a share link actually exposes — counts and trends, never the workout log itself.
+function shareSummary(user) {
+  const S = readState(user.id) || {};
+  const workouts = S.workouts || [];
+  const cutoff30 = Date.now() - 30 * 86400000;
+  const workoutsLast30 = workouts.filter(w => new Date(w.d + 'T12:00:00').getTime() >= cutoff30).length;
+  const totalPRs = workouts.reduce((n, w) => n + (w.prs ? w.prs.length : 0), 0);
+  const byWeek = new Map();
+  workouts.forEach(w => { const k = weekKey(w.d); byWeek.set(k, (byWeek.get(k) || 0) + (w.vol || 0)); });
+  const volumeByWeek = [];
+  for (let i = 7; i >= 0; i--) {
+    const d = new Date(); d.setDate(d.getDate() - i * 7);
+    const k = weekKey(isoOf(d));
+    volumeByWeek.push({ week: k, vol: Math.round(byWeek.get(k) || 0) });
+  }
+  const bw = S.bodyweight || [];
+  return {
+    name: user.name,
+    unit: S.unit || 'kg',
+    totalWorkouts: workouts.length,
+    workoutsLast30,
+    streakWeeks: streakWeeksOf(workouts),
+    totalPRs,
+    volumeByWeek,
+    bodyweight: bw.length ? { first: bw[0], latest: bw[bw.length - 1] } : null
+  };
+}
 
 /* ---------- live presence (in-memory) ---------- */
 // Clients heartbeat /api/activity while a workout is on screen; the admin dashboard reads who's
@@ -471,6 +537,51 @@ const routes = {
       });
     } else presence.delete(user.id);
     json(res, 200, { ok: true });
+  },
+
+  /* ---------- share link (read-only progress summary, no login) ---------- */
+  // A signed-in profile can mint a link that shows a SUMMARY only — streak, workout counts,
+  // recent PRs, a weekly volume trend, first/latest body weight — never the workout log or
+  // account access. One active link per user (minting a new one replaces the old), expiring,
+  // and revocable from Settings any time. The token itself is the entire authorization model,
+  // same trade-off as an invite code (see the comment above invites/new) but sized up (128
+  // bits, not 64) since this exposes a real person's data rather than gating a signup.
+  'POST /api/share': async (req, res) => {
+    const user = readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    const days = Math.max(1, Math.min(SHARE_MAX_DAYS, Math.round(+body.days) || SHARE_DEFAULT_DAYS));
+    const token = crypto.randomBytes(16).toString('base64url');
+    db.shares = db.shares.filter(s => s.userId !== user.id);
+    const share = { token, userId: user.id, created: new Date().toISOString(), expiresAt: Date.now() + days * 86400000 };
+    db.shares.push(share);
+    saveDb();
+    json(res, 200, { token, expiresAt: share.expiresAt });
+  },
+
+  'GET /api/share/status': async (req, res) => {
+    const user = readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const s = activeShareFor(user.id);
+    json(res, 200, { active: !!s, token: s ? s.token : null, expiresAt: s ? s.expiresAt : null });
+  },
+
+  'POST /api/share/revoke': async (req, res) => {
+    const user = readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    db.shares = db.shares.filter(s => s.userId !== user.id);
+    saveDb();
+    json(res, 200, { ok: true });
+  },
+
+  // Public — deliberately no readSession call. Anyone holding the token gets the summary.
+  'GET /api/share/view': async (req, res) => {
+    const token = new URL(req.url, 'http://x').searchParams.get('token');
+    const s = token && db.shares.find(x => x.token === token);
+    if (!s || s.expiresAt < Date.now()) return json(res, 404, { error: 'this link has expired or does not exist' });
+    const user = db.users.find(u => u.id === s.userId);
+    if (!user || user.disabled) return json(res, 404, { error: 'this link has expired or does not exist' });
+    json(res, 200, shareSummary(user));
   },
 
   /* ---------- admin dashboard ---------- */

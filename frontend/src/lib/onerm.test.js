@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { estimate1RM, bestSetOf, e1rmSeries, best1RM, is1RMRecord, REP_CAP, FORMULAS } from './onerm.js'
+import { estimate1RM, estimate1RMRange, bestSetOf, e1rmSeries, best1RM, is1RMRecord, REP_CAP, FORMULAS } from './onerm.js'
 
 describe('estimate1RM', () => {
   it('returns the load unchanged for a single rep', () => {
@@ -62,14 +62,44 @@ describe('estimate1RM', () => {
   })
 })
 
+// The blended estimate is what bestSetOf/e1rmSeries/best1RM/is1RMRecord actually use — see
+// below. It exists so the app's headline number isn't just Epley's alone.
+describe('estimate1RMRange', () => {
+  it('averages the documented formulas rather than picking one', () => {
+    const r = estimate1RMRange(100, 5)
+    const vals = Object.values(FORMULAS).map(fn => fn(100, 5))
+    expect(r.est).toBeCloseTo(vals.reduce((a, b) => a + b, 0) / vals.length, 1)
+  })
+
+  it('reports the low/high spread across formulas, not a false-precision point estimate', () => {
+    const r = estimate1RMRange(100, 5)
+    expect(r.low).toBeLessThan(r.est)
+    expect(r.high).toBeGreaterThan(r.est)
+    // Epley (highest of the three here) and Brzycki (lowest) bound the range
+    expect(r.high).toBeCloseTo(FORMULAS.lombardi(100, 5), 1)
+    expect(r.low).toBeCloseTo(FORMULAS.brzycki(100, 5), 1)
+  })
+
+  it('a single rep collapses the range to the measurement itself', () => {
+    expect(estimate1RMRange(100, 1)).toEqual({ est: 100, low: 100, high: 100 })
+  })
+
+  it('applies the same validity guards as estimate1RM', () => {
+    expect(estimate1RMRange(0, 5)).toBeNull()
+    expect(estimate1RMRange(100, 0)).toBeNull()
+    expect(estimate1RMRange(100, REP_CAP + 1)).toBeNull()
+    expect(estimate1RMRange(NaN, 5)).toBeNull()
+  })
+})
+
 describe('bestSetOf', () => {
-  it('picks the highest estimate, not the heaviest set', () => {
+  it('picks the highest blended estimate, not the heaviest set', () => {
     const entry = { id: 'x', sets: [
-      { w: 100, r: 5, done: true },   // 116.7
-      { w: 110, r: 3, done: true },   // 121.0
-      { w: 120, r: 1, done: true }    // 120.0
+      { w: 100, r: 5, done: true },   // est 115.5
+      { w: 110, r: 3, done: true },   // est 120.1 — the winner
+      { w: 120, r: 1, done: true }    // est 120 (measured)
     ] }
-    expect(bestSetOf(entry)).toEqual({ est: 121, w: 110, r: 3 })
+    expect(bestSetOf(entry)).toEqual({ est: 120.1, low: 116.5, high: 122.8, w: 110, r: 3 })
   })
 
   it('ignores sets that were never checked off', () => {
@@ -79,7 +109,7 @@ describe('bestSetOf', () => {
 
   it('ignores topW, which carries no rep count', () => {
     const entry = { id: 'x', topW: 200, sets: [{ w: 100, r: 5, done: true }] }
-    expect(bestSetOf(entry).est).toBe(116.7)
+    expect(bestSetOf(entry).est).toBe(115.5)
   })
 
   it('returns null for cardio and timed entries', () => {
@@ -108,11 +138,17 @@ describe('e1rmSeries / best1RM', () => {
   it('yields one chronological point per workout that produced an estimate', () => {
     const pts = e1rmSeries(S, 'bench')
     expect(pts.map(p => p.d)).toEqual(['2026-01-01', '2026-01-15', '2026-01-22'])
-    expect(pts.map(p => p.y)).toEqual([93.3, 105, 99.2])
+    expect(pts.map(p => p.y)).toEqual([92.4, 104, 98.2])
+  })
+
+  it('carries the low/high spread through to each point, for a chart to show if it wants to', () => {
+    const pts = e1rmSeries(S, 'bench')
+    expect(pts[0].low).toBeLessThan(pts[0].y)
+    expect(pts[0].high).toBeGreaterThan(pts[0].y)
   })
 
   it('reports the all-time best with the set behind it', () => {
-    expect(best1RM(S, 'bench')).toEqual({ est: 105, w: 90, r: 5, d: '2026-01-15', t: 3 })
+    expect(best1RM(S, 'bench')).toEqual({ est: 104, low: 101.3, high: 105.7, w: 90, r: 5, d: '2026-01-15', t: 3 })
   })
 
   it('has nothing to say about cardio or an unknown exercise', () => {
@@ -127,7 +163,7 @@ describe('e1rmSeries / best1RM', () => {
 describe('is1RMRecord', () => {
   it('flags a session that beats every previous estimate', () => {
     const rec = is1RMRecord(S, 'bench', { id: 'bench', sets: [{ w: 95, r: 5, done: true }] })
-    expect(rec).toEqual({ est: 110.8, w: 95, r: 5, prev: 105 })
+    expect(rec).toEqual({ est: 109.8, low: 106.9, high: 111.6, w: 95, r: 5, prev: 104 })
   })
 
   it('stays quiet when the session does not beat the record', () => {
@@ -138,7 +174,7 @@ describe('is1RMRecord', () => {
   it('counts the first ever estimate as a record', () => {
     const rec = is1RMRecord(S, 'deadlift', { id: 'deadlift', sets: [{ w: 140, r: 3, done: true }] })
     expect(rec.prev).toBe(0)
-    expect(rec.est).toBe(154)
+    expect(rec.est).toBe(152.8)
   })
 
   it('says nothing for a timed or unfinished entry', () => {

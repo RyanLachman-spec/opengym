@@ -90,6 +90,18 @@ export default function AdminCoach() {
           disabled={busy} onClick={() => patch({ provider: p.id })}>{p.label}</button>)}
       </div>
 
+      {/* local endpoint (Ollama) — no account, just an address and a model name */}
+      {meta.localEndpoint && <>
+        <h4 className="sec">Connection</h4>
+        <div className="muted small" style={{ marginBottom: 8 }}>
+          Talks to Ollama on this same machine — no account, no key. Pick a model you've already pulled below.
+        </div>
+        <TextField defaultValue={d.baseUrl || ''} placeholder="http://host.docker.internal:11434"
+          onBlur={e => e.target.value !== (d.baseUrl || '') && patch({ baseUrl: e.target.value || null })} />
+        <div style={{ height: 8 }} />
+        <Button size="sm" icon="check" disabled={busy} onClick={test}>Test the Coach</Button>
+      </>}
+
       {/* credential */}
       {(meta.setupToken || meta.deviceLogin || meta.apiKey) && <>
         <h4 className="sec">Credential</h4>
@@ -133,8 +145,9 @@ export default function AdminCoach() {
       <div className="dim small" style={{ marginBottom: 10 }}>0 = no limit. Every job is one session on your provider account.</div>
 
       <h4 className="sec">Model</h4>
-      <TextField defaultValue={d.model || ''} placeholder="(the provider default)"
+      <TextField defaultValue={d.model || ''} placeholder={meta.localEndpoint ? 'e.g. llama3.1:8b — must be pulled already' : '(the provider default)'}
         onBlur={e => e.target.value !== (d.model || '') && patch({ model: e.target.value })} />
+      {meta.localEndpoint && !d.model && <div className="dim small" style={{ marginTop: 6 }}>Required — Ollama has no sane default to fall back to.</div>}
 
       {d.lastError && <>
         <h4 className="sec">Last failure</h4>

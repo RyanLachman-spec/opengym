@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from './store/useStore.js'
 import { useUI } from './store/useUI.js'
-import { EXDB, EXIDX, BODYPARTS, isCardio, allExercises, equipmentOf } from './lib/exercises.js'
+import { EXDB, EXIDX, BODYPARTS, isCardio, allExercises, equipmentOf, COMMON_EQUIPMENT } from './lib/exercises.js'
 import { fmtDate, fmtNum, fmtVol, fmtDur, durPart, todayISO, uid, exCount, DAYN, MONTHS_LONG, ACCENTS } from './lib/format.js'
 import { lastEntryFor, bestWeightFor, buildSets, effectiveRoutineId, workoutVolume, setsDone, setsDoneActive, lastBW, supersetUnits, unitOf, setLabel, defaultConfig, cleanupSg, modeOf, effortOf } from './lib/history.js'
 import { beep, vibrate } from './lib/sound.js'
@@ -11,15 +11,19 @@ import { starterRoutines } from './lib/starter.js'
 import Media, { Thumb } from './components/Media.jsx'
 import Stepper from './components/Stepper.jsx'
 import Icon from './components/Icon.jsx'
-import { Button, Slider, Switch, Segmented, SelectRow, TextArea } from './components/ui.jsx'
+import { Button, Slider, Switch, Segmented, SelectRow, TextArea, TextField, Row, SearchField } from './components/ui.jsx'
 import { glyphOf, GLYPH_GROUPS, DEFAULT_GLYPH } from './lib/glyphs.js'
 import BodyMap from './components/BodyMap.jsx'
 import { loadOfWorkouts } from './lib/muscles.js'
 import { parseImport, mergeImport } from './lib/import-csv.js'
 import { buildPlanBundle, parsePlan, mergePlan, printPlan } from './lib/plan-share.js'
-import { estimate1RM, best1RM, is1RMRecord, REP_CAP } from './lib/onerm.js'
+import { estimate1RMRange, best1RM, is1RMRecord, REP_CAP } from './lib/onerm.js'
 import { nextPrescription, applyPrescription, policyFor, defaultIncrement, POLICIES_FOR, POLICY_NAME, POLICY_DESC } from './lib/progression.js'
 import { MOBILE, shareExport } from './lib/mobile.js'
+import { calcPlates, barOf, plateSetOf, plateLabel, DEFAULT_SET } from './lib/plates.js'
+import { addPhoto, listPhotos, deletePhoto } from './lib/photos.js'
+import { api } from './lib/api.js'
+import { searchFood, lookupBarcode, makeEntry, nutritionTargets, ACTIVITY } from './lib/food.js'
 
 const S = () => useStore.getState().S
 const update = (...a) => useStore.getState().update(...a)
@@ -251,6 +255,280 @@ function GoalSheet({ close }) {
 }
 export const goalSheet = () => ui().openSheet(close => <GoalSheet close={close} />)
 
+/* ============================ plate calculator ============================ */
+// What to load per side for a given bar weight (issue: feature request). Bar + available
+// plates are per-profile, not per-set — most people train at one gym — so they're edited
+// through their own small sheet rather than re-entered every time the calculator opens.
+function PlateConfigSheet({ close }) {
+  const st = useStore(s => s.S)
+  const unit = st.unit
+  const all = DEFAULT_SET[unit] || DEFAULT_SET.kg
+  const [bar, setBar] = useState(barOf(st))
+  const [have, setHave] = useState(new Set(plateSetOf(st)))
+  const toggle = p => setHave(h => { const n = new Set(h); n.has(p) ? n.delete(p) : n.add(p); return n })
+  const save = () => {
+    update(s => { s.plateBar = bar || null; s.plateSet = all.filter(p => have.has(p)) })
+    close()
+  }
+  return <>
+    <h3>{t('Bar & plates')}</h3>
+    <div className="muted small" style={{ marginBottom: 14 }}>{t('What this gym actually has — the calculator only suggests plates you keep checked here.')}</div>
+    <Stepper label={t('Bar weight ({0})', unit)} value={bar} step={unit === 'lb' ? 5 : 2.5} onChange={setBar} />
+    <div style={{ height: 14 }} />
+    <div className="muted small" style={{ marginBottom: 8 }}>{t('Plates available')}</div>
+    <div className="chips" style={{ flexWrap: 'wrap' }}>
+      {all.map(p => <button key={p} className={'chip' + (have.has(p) ? ' on' : '')} onClick={() => toggle(p)}>{plateLabel(p)}</button>)}
+    </div>
+    <div style={{ height: 16 }} />
+    <Button variant="primary" onClick={save}>{t('Save')}</Button>
+  </>
+}
+
+function PlateCalc({ startWeight }) {
+  const st = useStore(s => s.S)
+  const bar = barOf(st)
+  const [w, setW] = useState(startWeight > 0 ? startWeight : bar)
+  const set = plateSetOf(st)
+  const r = calcPlates(w, { bar, set })
+  return <>
+    <div className="row between" style={{ marginBottom: 2 }}>
+      <h3 style={{ margin: 0 }}>{t('Plate calculator')}</h3>
+      <button className="iconbtn" aria-label={t('Bar & plates')} onClick={() => ui().openSheet(c => <PlateConfigSheet close={c} />)}><Icon name="gear" /></button>
+    </div>
+    <WeightInput value={w} setValue={setW} unit={st.unit} />
+    <div style={{ height: 10 }} />
+    <div className="row between" style={{ marginBottom: 10 }}>
+      <span className="muted small">{t('Bar')}</span><b>{fmtNum(bar)} {st.unit}</b>
+    </div>
+    {r.perSide.length ? <div className="chips" style={{ justifyContent: 'center', flexWrap: 'wrap' }}>
+      {r.perSide.flatMap(p => Array.from({ length: p.count }, (_, i) => (
+        <span key={p.plate + '-' + i} className="mchip" style={{ fontSize: 15, padding: '8px 15px' }}>{plateLabel(p.plate)}</span>
+      )))}
+    </div> : <div className="muted small" style={{ textAlign: 'center' }}>{t('Just the bar.')}</div>}
+    <div className="small dim" style={{ textAlign: 'center', marginTop: 10 }}>{t('Per side, bar to collar.')}</div>
+    {r.diff < -0.01 && <div className="small" style={{ color: 'var(--yellow)', textAlign: 'center', marginTop: 8 }}>
+      {t('Below the bar — the lightest you can load is {0} {1}.', fmtNum(bar), st.unit)}
+    </div>}
+    {r.diff > 0.01 && <div className="small" style={{ color: 'var(--yellow)', textAlign: 'center', marginTop: 8 }}>
+      {t('Closest with these plates: {0} {1} ({2} short)', fmtNum(r.achieved), st.unit, fmtNum(r.diff))}
+    </div>}
+  </>
+}
+export const plateCalcSheet = startWeight => ui().openSheet(() => <PlateCalc startWeight={startWeight} />)
+
+/* ============================ gym equipment presets ============================ */
+// "What this gym actually has" (issue: feature request) — named so a traveller can flip
+// between e.g. Home and Hotel. A preset is just a name + a subset of COMMON_EQUIPMENT;
+// activeEquipment (a preset id, or null for "everything") is what the exercise picker and
+// Coach intake actually read.
+function EquipmentPresetEditor({ preset, close }) {
+  const [name, setName] = useState(preset.name)
+  const [have, setHave] = useState(new Set(preset.eq))
+  const toggle = e => setHave(h => { const n = new Set(h); n.has(e) ? n.delete(e) : n.add(e); return n })
+  const save = () => {
+    const nm = name.trim() || t('My gym')
+    update(s => {
+      const arr = s.equipmentPresets || []
+      const next = { id: preset.id, name: nm, eq: COMMON_EQUIPMENT.filter(e => have.has(e)) }
+      const i = arr.findIndex(p => p.id === preset.id)
+      s.equipmentPresets = i === -1 ? [...arr, next] : arr.map((p, idx) => (idx === i ? next : p))
+    })
+    close()
+  }
+  const del = () => confirmSheet({
+    title: t('Delete this preset?'), confirmText: t('Delete'), danger: true,
+    onConfirm: () => { update(s => { s.equipmentPresets = (s.equipmentPresets || []).filter(p => p.id !== preset.id); if (s.activeEquipment === preset.id) s.activeEquipment = null }); close() },
+  })
+  return <>
+    <h3>{preset.isNew ? t('New preset') : t('Edit preset')}</h3>
+    <TextField value={name} onChange={e => setName(e.target.value)} placeholder={t('e.g. Home gym')} maxLength={30} />
+    <div style={{ height: 14 }} />
+    <div className="muted small" style={{ marginBottom: 8 }}>{t('Equipment available here')}</div>
+    <div className="row" style={{ flexWrap: 'wrap', gap: 7 }}>
+      {COMMON_EQUIPMENT.map(e => <button key={e} className={'chip' + (have.has(e) ? ' on' : '')}
+        onClick={() => toggle(e)} style={{ textTransform: 'capitalize' }}>{t(e)}</button>)}
+    </div>
+    <div style={{ height: 16 }} /><Button variant="primary" onClick={save}>{t('Save')}</Button>
+    {!preset.isNew && <><div style={{ height: 8 }} /><Button variant="danger" onClick={del}>{t('Delete preset')}</Button></>}
+  </>
+}
+
+function EquipmentPresetsSheet() {
+  const st = useStore(s => s.S)
+  const presets = st.equipmentPresets || []
+  const edit = preset => ui().openSheet(c => <EquipmentPresetEditor preset={preset} close={c} />)
+  const setActive = id => update(s => { s.activeEquipment = s.activeEquipment === id ? null : id })
+  return <>
+    <h3>{t('Gym equipment')}</h3>
+    <div className="muted small" style={{ marginBottom: 14 }}>
+      {t('Presets for what a gym actually has. The active one narrows the exercise picker and pre-fills the Coach intake — pick none to see everything, like before.')}
+    </div>
+    {presets.length === 0 && <div className="muted small" style={{ marginBottom: 14 }}>{t('No presets yet.')}</div>}
+    <div className="list" style={{ marginBottom: 14 }}>
+      {presets.map(p => <div key={p.id} className="item" onClick={() => setActive(p.id)}>
+        <span className="lrow-i"><Icon name="dumbbell" /></span>
+        <div className="grow"><div className="tt">{p.name}</div><div className="ss">{t('{0} equipment types', p.eq.length)}</div></div>
+        {st.activeEquipment === p.id && <span className="tag acc">{t('Active')}</span>}
+        <button className="iconbtn" aria-label={t('Edit')} onClick={ev => { ev.stopPropagation(); edit(p) }}><Icon name="pencil" /></button>
+      </div>)}
+    </div>
+    <Button icon="plus" onClick={() => edit({ id: uid(), name: '', eq: [], isNew: true })}>{t('Add preset')}</Button>
+  </>
+}
+export const equipmentPresetsSheet = () => ui().openSheet(() => <EquipmentPresetsSheet />)
+
+/* ============================ progress photos ============================ */
+// Device-only (see lib/photos.js for why) — a small gallery, a full-size view with delete,
+// and a side-by-side compare between any two photos you pick.
+function PhotoDetail({ photo, url, onDeleted, close }) {
+  const del = () => confirmSheet({
+    title: t('Delete this photo?'), confirmText: t('Delete'), danger: true,
+    onConfirm: async () => { await deletePhoto(photo.id); onDeleted(photo.id); close() },
+  })
+  return <>
+    <div className="muted small" style={{ textAlign: 'center', marginBottom: 10 }}>{fmtDate(photo.d, true)}</div>
+    <img src={url} alt="" style={{ width: '100%', borderRadius: 14, marginBottom: 14, maxHeight: '55vh', objectFit: 'contain', background: 'var(--surface-2)', display: 'block' }} />
+    <Button variant="danger" icon="trash" onClick={del}>{t('Delete photo')}</Button>
+  </>
+}
+
+function PhotoCompare({ a, b, urlA, urlB }) {
+  const cell = (p, url) => <div style={{ flex: 1, textAlign: 'center' }}>
+    <img src={url} alt="" style={{ width: '100%', aspectRatio: '3/4', objectFit: 'cover', borderRadius: 12, background: 'var(--surface-2)', display: 'block' }} />
+    <div className="small dim" style={{ marginTop: 6 }}>{fmtDate(p.d, true)}</div>
+  </div>
+  return <>
+    <h3>{t('Compare')}</h3>
+    <div className="row" style={{ gap: 8, alignItems: 'flex-start' }}>{cell(a, urlA)}{cell(b, urlB)}</div>
+  </>
+}
+
+function ProgressPhotos() {
+  const fileRef = useRef(null)
+  const urls = useRef(new Map())    // photo id -> object URL, revoked on unmount
+  const [photos, setPhotos] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [supported, setSupported] = useState(true)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selected, setSelected] = useState([])
+
+  const refresh = () => listPhotos().then(setPhotos).catch(() => setSupported(false)).finally(() => setLoading(false))
+  useEffect(() => { refresh() }, [])
+  useEffect(() => () => { urls.current.forEach(u => URL.revokeObjectURL(u)); urls.current.clear() }, [])
+
+  const urlFor = p => {
+    if (!urls.current.has(p.id)) urls.current.set(p.id, URL.createObjectURL(p.blob))
+    return urls.current.get(p.id)
+  }
+  const onFile = ev => {
+    const f = ev.target.files[0]; ev.target.value = ''
+    if (!f) return
+    addPhoto(f, todayISO()).then(refresh).catch(() => toast(t('Could not save that photo')))
+  }
+  const toggleSelect = id => setSelected(s => (s.includes(id) ? s.filter(x => x !== id) : (s.length < 2 ? [...s, id] : s)))
+  const openDetail = p => ui().openSheet(c => <PhotoDetail photo={p} url={urlFor(p)}
+    onDeleted={pid => setPhotos(ph => ph.filter(x => x.id !== pid))} close={c} />)
+  const compare = () => {
+    const a = photos.find(p => p.id === selected[0]), b = photos.find(p => p.id === selected[1])
+    if (a && b) ui().openSheet(() => <PhotoCompare a={a} b={b} urlA={urlFor(a)} urlB={urlFor(b)} />)
+  }
+
+  if (!supported) return <>
+    <h3>{t('Progress photos')}</h3>
+    <div className="muted small">{t('Not supported in this browser.')}</div>
+  </>
+  return <>
+    <div className="row between" style={{ marginBottom: 4 }}>
+      <h3 style={{ margin: 0 }}>{t('Progress photos')}</h3>
+      {photos.length > 1 && <button className="chip nocap" onClick={() => { setSelectMode(v => !v); setSelected([]) }}>{selectMode ? t('Cancel') : t('Compare')}</button>}
+    </div>
+    <div className="muted small" style={{ marginBottom: 14 }}>{t('Stored only on this device — never synced, never in your backup.')}</div>
+    {!loading && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 14 }}>
+      <button onClick={() => fileRef.current.click()} aria-label={t('Add photo')}
+        style={{ aspectRatio: '3/4', borderRadius: 12, border: '1px dashed var(--sep)', background: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--label-2)' }}>
+        <Icon name="plus" style={{ fontSize: 22 }} />
+      </button>
+      {photos.map(p => <div key={p.id} style={{ position: 'relative' }} onClick={() => (selectMode ? toggleSelect(p.id) : openDetail(p))}>
+        <img src={urlFor(p)} alt="" style={{
+          width: '100%', aspectRatio: '3/4', objectFit: 'cover', borderRadius: 12, display: 'block',
+          opacity: selectMode && !selected.includes(p.id) ? 0.5 : 1,
+          outline: selected.includes(p.id) ? '2px solid var(--acc)' : 'none',
+        }} />
+        <div className="small" style={{ position: 'absolute', bottom: 4, left: 0, right: 0, textAlign: 'center', color: '#fff', textShadow: '0 1px 3px rgba(0,0,0,.8)' }}>{fmtDate(p.d)}</div>
+      </div>)}
+    </div>}
+    {!loading && photos.length === 0 && <div className="muted small" style={{ textAlign: 'center', marginBottom: 14 }}>{t('No photos yet — tap + to add one.')}</div>}
+    <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={onFile} />
+    {selectMode && selected.length === 2 && <Button variant="primary" onClick={compare}>{t('Compare selected')}</Button>}
+  </>
+}
+export const progressPhotosSheet = () => ui().openSheet(() => <ProgressPhotos />)
+
+/* ============================ share progress ============================ */
+// A read-only link to /api/share/view's summary (see api/server.js — counts and a volume
+// trend, never the workout log). One active link at a time; creating a new one replaces
+// whatever was there, same mental model as a session.
+function ShareProgressSheet() {
+  const [status, setStatus] = useState(null)   // null while loading
+  const [busy, setBusy] = useState(false)
+  const refresh = () => api('/api/share/status').then(setStatus).catch(() => setStatus({ active: false }))
+  useEffect(() => { refresh() }, [])
+
+  const create = async () => {
+    setBusy(true)
+    try { await api('/api/share', { method: 'POST', body: JSON.stringify({ days: 7 }) }); await refresh() }
+    catch (e) { toast(e.message || t('Could not create the link')) }
+    setBusy(false)
+  }
+  const revoke = () => confirmSheet({
+    title: t('Revoke this link?'), message: t('Anyone holding the old link loses access immediately.'),
+    confirmText: t('Revoke'), danger: true,
+    onConfirm: async () => {
+      setBusy(true)
+      try { await api('/api/share/revoke', { method: 'POST', body: '{}' }); await refresh() } catch (e) { /* */ }
+      setBusy(false)
+    },
+  })
+  const url = status?.token ? `${location.origin}${location.pathname}#/share/${status.token}` : ''
+  const copy = () => {
+    navigator.clipboard?.writeText(url)
+      .then(() => toast(t('Link copied')))
+      .catch(() => toast(t('Could not copy — select the link and copy it manually')))
+  }
+
+  if (!status) return <h3>{t('Share progress')}</h3>
+  return <>
+    <h3>{t('Share progress')}</h3>
+    <div className="muted small" style={{ marginBottom: 14 }}>
+      {t('A read-only link with your streak, workout counts, recent PRs and a volume trend — never your workout log or account access. Expires on its own, or revoke it any time.')}
+    </div>
+    {status.active ? <>
+      <div className="card" style={{ marginBottom: 10, wordBreak: 'break-all' }}><span className="small">{url}</span></div>
+      <div className="muted small" style={{ marginBottom: 14 }}>{t('Expires {0}', fmtDate(new Date(status.expiresAt).toISOString().slice(0, 10), true))}</div>
+      <Button variant="primary" icon="link" disabled={busy} onClick={copy}>{t('Copy link')}</Button>
+      <div style={{ height: 8 }} />
+      <Button variant="danger" icon="trash" disabled={busy} onClick={revoke}>{t('Revoke link')}</Button>
+    </> : <Button variant="primary" icon="link" disabled={busy} onClick={create}>{t('Create link (valid 7 days)')}</Button>}
+  </>
+}
+export const shareProgressSheet = () => ui().openSheet(() => <ShareProgressSheet />)
+
+/* ============================ muscle balance ============================ */
+export function muscleBalanceInfoSheet() {
+  ui().openSheet(() => <>
+    <h3>{t('Muscle balance')}</h3>
+    <div className="muted small" style={{ lineHeight: 1.5, marginBottom: 12 }}>
+      {t('From your current weekly schedule — the plan, not the log. Two things the research keeps coming back to:')}
+    </div>
+    <div className="small" style={{ lineHeight: 1.6, marginBottom: 10 }}>
+      <b>{t('Sets per week')}</b> — {t('roughly 10–20 hard sets a week per muscle covers most trained lifters, with real but shrinking returns above that. Highly individual — a starting range, not a target.')}
+    </div>
+    <div className="small" style={{ lineHeight: 1.6 }}>
+      <b>{t('Training days')}</b> — {t('hitting a muscle at least twice a week has outperformed once a week at equal volume in the meta-analyses that looked. Flagged only when your week already has the days to spread it across.')}
+    </div>
+  </>)
+}
+
 /* ============================ exercise detail ============================ */
 // Estimated 1RM for one exercise (issue #18): what the log already implies, plus a calculator
 // for a set you have not done — so the number is reachable before there is any history.
@@ -259,7 +537,11 @@ function OneRM({ ex }) {
   const best = best1RM(st, ex.id)
   const [w, setW] = useState(best ? best.w : (st.exWeights[ex.id] || {}).w || 20)
   const [r, setR] = useState(best ? best.r : 5)
-  const est = estimate1RM(w, r)
+  const range = estimate1RMRange(w, r)
+  // Three published formulas (Epley, Brzycki, Lombardi) agree closely at low reps and spread
+  // apart as reps rise — the estimate is their average, and the spread is shown rather than
+  // hidden, so "142 kg" doesn't imply a precision none of the underlying formulas has earned.
+  const spread = range && range.high - range.low > 0.5
   return <>
     <h4 className="sec">{t('Estimated 1RM')}</h4>
     {best && <div className="small" style={{ marginBottom: 8 }}>
@@ -272,11 +554,13 @@ function OneRM({ ex }) {
     </div>
     <div className="row between" style={{ marginBottom: 4 }}>
       <span className="muted small">{t('Estimate')}</span>
-      <b className="accent" style={{ fontSize: 20 }}>{est === null ? '—' : fmtNum(est) + ' ' + st.unit}</b>
+      <b className="accent" style={{ fontSize: 20 }}>{range === null ? '—' : fmtNum(range.est) + ' ' + st.unit}</b>
     </div>
-    <div className="small dim">{est === null
+    <div className="small dim">{range === null
       ? t('Enter a weight and 1–{0} reps — beyond that an estimate is guesswork.', REP_CAP)
-      : t('Epley formula — a calculation from one set, not a tested max.')}</div>
+      : spread
+        ? t('Average of three formulas — anywhere from {0} to {1} {2}, not a tested max.', fmtNum(range.low), fmtNum(range.high), st.unit)
+        : t('Average of three formulas — a calculation from one set, not a tested max.')}</div>
   </>
 }
 
@@ -411,14 +695,19 @@ function usageMap(st) {
 function ExercisePicker({ onPick, close }) {
   const st = useStore(s => s.S)
   const usage = usageMap(st)
+  const activePreset = (st.equipmentPresets || []).find(p => p.id === st.activeEquipment)
   const [q, setQ] = useState('')
   const [bp, setBp] = useState('')          // '' = all, '★' = chosen, else a body part
   const [eq, setEq] = useState('')          // '' = any equipment
+  // Defaults on when a gym preset is active — a traveller opening this picker wants what's
+  // in front of them, but one tap gets back to the full library for this session only.
+  const [myGym, setMyGym] = useState(!!activePreset)
   const [shown, setShown] = useState(50)
   const ql = q.toLowerCase().trim()
   const all = allExercises(st)
   let base = all.filter(e =>
     (bp === '★' ? usage[e.id] : (!bp || e.bp === bp)) &&
+    (!myGym || !activePreset || !e.eq || activePreset.eq.includes(e.eq)) &&
     (!ql || e.n.toLowerCase().includes(ql) || e.tg.includes(ql) || e.eq.includes(ql) || (e.desc || '').toLowerCase().includes(ql)))
   if (bp === '★') base = [...base].sort((a, b) => (usage[b.id] - usage[a.id]) || (a.n < b.n ? -1 : 1))
   const eqOpts = equipmentOf(base)
@@ -430,6 +719,11 @@ function ExercisePicker({ onPick, close }) {
     <h3>{t('Add exercise')}</h3>
     <div className="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
       <input className="input" placeholder={t('Search {0} exercises…', all.length)} value={q} onChange={e => { setQ(e.target.value); setShown(50) }} /></div>
+    {activePreset && <div className="chips" style={{ margin: '10px 0 6px' }}>
+      <button className={'chip nocap' + (myGym ? ' on' : '')} onClick={() => setMyGym(v => !v)}>
+        <Icon name="dumbbell" style={{ fontSize: 12, display: 'inline-block', marginRight: 4, verticalAlign: '-1px' }} />{myGym ? t('{0} only', activePreset.name) : t('Showing everything')}
+      </button>
+    </div>}
     <div className="chips" style={{ margin: eqOpts.length > 1 ? '10px 0 6px' : '10px 0' }}>
       {chosenCount > 0 && <button className={'chip' + (bp === '★' ? ' on' : '')} onClick={() => { setBp('★'); setEq(''); setShown(50) }}><Icon name="starFill" style={{ fontSize: 12, display: 'inline-block', marginRight: 4, verticalAlign: '-1px' }} />{t('Chosen')} ({chosenCount})</button>}
       <button className={'chip nocap' + (!bp ? ' on' : '')} onClick={() => { setBp(''); setEq(''); setShown(50) }}>{t('All')}</button>
@@ -761,7 +1055,7 @@ export function WorkoutRow({ w, onClick }) {
   return <div className="item" onClick={onClick}>
     <span className="lrow-i" style={{ width: 34, height: 34, borderRadius: 8, fontSize: 19 }}><Icon name={glyph} /></span>
     <div className="grow"><div className="tt">{w.name}</div>
-      <div className="ss">{[fmtDate(w.d, true), ...durPart(w.end - w.start), t('{0} sets', setsDone(w)), fmtVol(w.vol, st.unit)].join(' · ')}</div></div>
+      <div className="ss">{[fmtDate(w.d, true), ...durPart(w.end - w.start), t('{0} sets', setsDone(w)), fmtVol(w.vol, st.unit), w.gym].filter(Boolean).join(' · ')}</div></div>
     {w.prs && w.prs.length > 0 && <span className="pr"><Icon name="trophy" />{w.prs.length} PR</span>}
     <Icon name="chevronRight" className="chev" />
   </div>
@@ -781,8 +1075,12 @@ export function beginWorkout(routineId, bw) {
     const plan = nextPrescription(st, cfg, r)
     return { id: cfg.id, sg: cfg.sg, target: { ...cfg }, plan, sets: applyPrescription(buildSets(st, cfg), plan) }
   })
+  // Tagged with whatever gym preset is active when the workout starts (issue: feature
+  // request — training across more than one gym). null when no preset is active, same as
+  // every workout logged before this existed.
+  const gym = (st.equipmentPresets || []).find(p => p.id === st.activeEquipment)?.name || null
   update(s => {
-    s.active = { id: uid(), d: todayISO(), start: Date.now(), routineId, name: r ? r.name : t('Freestyle'), bw: bw || null, cur: 0, entries }
+    s.active = { id: uid(), d: todayISO(), start: Date.now(), routineId, name: r ? r.name : t('Freestyle'), bw: bw || null, gym, cur: 0, entries }
   })
   useUI.getState().stopRest()
   nav('/workout')
@@ -854,9 +1152,11 @@ export const workoutCompleteSheet = () => ui().openSheet(close => <WorkoutComple
 // there and never asks twice. Stored on the finished workout itself, so a rating stays tied
 // to the session it describes rather than living in a log nothing else can see.
 function SessionRating({ w }) {
+  const st = useStore(s => s.S)
   const update = useStore(s => s.update)
   const [rating, setRating] = useState(w.rating || null)
   const [note, setNote] = useState('')
+  const [sore, setSore] = useState(new Set(w.soreness || []))
   const onWorkout = (s, fn) => { const rec = (s.workouts || []).find(x => x.id === w.id); if (rec) fn(rec) }
   const pick = v => {
     const next = v === rating ? null : v
@@ -867,6 +1167,19 @@ function SessionRating({ w }) {
     const v = note.trim()
     if (v) rec.note = v.slice(0, 300); else delete rec.note
   }))
+  // Tapped straight onto a blank body map, separately from "what you just trained" above —
+  // load-shading and "this is sore" are two different things to say and reading both off one
+  // coloring would be confusing. Feeds the Coach's review alongside the rating (see
+  // api/coach/payload.js) — never read on its own, and only once the Coach is actually on.
+  const toggleSore = slug => {
+    const next = new Set(sore)
+    next.has(slug) ? next.delete(slug) : next.add(slug)
+    setSore(next)
+    update(s => onWorkout(s, rec => {
+      const arr = [...next]
+      if (arr.length) rec.soreness = arr; else delete rec.soreness
+    }))
+  }
   return <div style={{ textAlign: 'left', marginTop: 16 }}>
     <h4 className="sec">{t('How did that feel?')}</h4>
     <Segmented
@@ -877,6 +1190,13 @@ function SessionRating({ w }) {
       <TextArea rows={2} maxLength={300} value={note} onChange={e => setNote(e.target.value)} onBlur={saveNote}
         placeholder={t('Anything worth remembering? (optional)')} />
     </>}
+    <div style={{ height: 14 }} />
+    <div className="row between" style={{ marginBottom: 6 }}>
+      <span className="lrow-t">{t('Anything feel sore or off?')}</span>
+      {sore.size > 0 && <span className="tag" style={{ color: 'var(--yellow)' }}>{t('{0} marked', sore.size)}</span>}
+    </div>
+    <div className="muted small" style={{ marginBottom: 8 }}>{t('Tap a spot — optional, and read alongside your rating, never alone.')}</div>
+    <BodyMap className="tappable" load={{}} body={st.body} selected={[...sore]} onMuscle={toggleSore} />
   </div>
 }
 
@@ -927,7 +1247,7 @@ function doFinishWorkout() {
     if (rec && !prs.includes(e.id)) e1prs.push({ id: e.id, ...rec })
   })
   const w = {
-    id: A.id, d: A.d, start: A.start, end: Date.now(), routineId: A.routineId, name: A.name, bw: A.bw,
+    id: A.id, d: A.d, start: A.start, end: Date.now(), routineId: A.routineId, name: A.name, bw: A.bw, gym: A.gym || null,
     // `target` (what the session prescribed) is kept alongside the sets: without it a
     // finished workout cannot say whether it hit its reps, and a timed session reads back
     // as "0 reps". It is what the progression engine works from.
@@ -946,4 +1266,203 @@ function doFinishWorkout() {
   useUI.getState().stopRest()
   beep(snd(), 880, 0.15); beep(snd(), 1100, 0.15, 0.18); beep(snd(), 1320, 0.3, 0.36)
   ui().openSheet(close => <FinishSummary w={w} prs={prs} e1prs={e1prs} close={close} />, { kind: 'center', locked: true })
+}
+
+/* ============================ food diary ============================ */
+
+export function deleteFoodEntry(id) {
+  update(s => { s.foodLog = (s.foodLog || []).filter(e => e.id !== id) })
+}
+
+// Scales one product's per-100g figures to the grams actually eaten, then logs it.
+function FoodQuantitySheet({ product, day, close, onSaved }) {
+  const [g, setG] = useState(100)
+  const grams = Math.max(0, g || 0)
+  const f = grams / 100
+  const save = () => {
+    update(s => { (s.foodLog || (s.foodLog = [])).push(makeEntry(product, grams, day, uid())) })
+    close()
+    onSaved && onSaved()
+    toast(t('{0} logged', product.name))
+  }
+  return <>
+    <h3>{product.name}</h3>
+    {product.brand && <div className="muted small">{product.brand}</div>}
+    <div style={{ height: 10 }} />
+    <Stepper label={t('Grams')} value={g} step={10} decimal={false} onChange={setG} />
+    <div style={{ height: 14 }} />
+    <div className="tiles">
+      <div className="tile"><div className="l">{t('Calories')}</div><div className="v" style={{ fontSize: '1.1rem' }}>{fmtNum(product.per100.kcal * f)}</div></div>
+      <div className="tile"><div className="l">{t('Protein')}</div><div className="v" style={{ fontSize: '1.1rem' }}>{fmtNum(product.per100.protein * f)}g</div></div>
+      <div className="tile"><div className="l">{t('Carbs')}</div><div className="v" style={{ fontSize: '1.1rem' }}>{fmtNum(product.per100.carbs * f)}g</div></div>
+      <div className="tile"><div className="l">{t('Fat')}</div><div className="v" style={{ fontSize: '1.1rem' }}>{fmtNum(product.per100.fat * f)}g</div></div>
+    </div>
+    <Button variant="primary" onClick={save} disabled={!grams}>{t('Add to log')}</Button>
+  </>
+}
+export function foodQuantitySheet(product, day, onSaved) {
+  ui().openSheet(close => <FoodQuantitySheet product={product} day={day} close={close} onSaved={onSaved} />)
+}
+
+// Camera barcode scan, via a dynamic import — @zxing/browser is sizeable and this is the
+// only place that needs it, so it stays out of the main bundle until someone taps "scan".
+function BarcodeScanSheet({ onFound, close }) {
+  const videoRef = useRef(null)
+  const [status, setStatus] = useState('starting') // starting | scanning | error
+
+  useEffect(() => {
+    let stopped = false
+    let controls = null
+    import('@zxing/browser').then(({ BrowserMultiFormatReader }) => {
+      if (stopped) return
+      const reader = new BrowserMultiFormatReader()
+      reader.decodeFromConstraints({ video: { facingMode: 'environment' } }, videoRef.current, (result) => {
+        if (stopped || !result) return
+        stopped = true
+        controls?.stop()
+        onFound(result.getText())
+      }).then(c => { if (stopped) c.stop(); else { controls = c; setStatus('scanning') } })
+        .catch(() => setStatus('error'))
+    }).catch(() => setStatus('error'))
+    return () => { stopped = true; controls?.stop() }
+  }, [onFound])
+
+  return <>
+    <h3>{t('Scan barcode')}</h3>
+    {status === 'error' ? (
+      <div className="muted small" style={{ marginBottom: 12 }}>{t('Could not access the camera — check permissions, or search by name instead.')}</div>
+    ) : <>
+      <div style={{ borderRadius: 'var(--r-card)', overflow: 'hidden', background: '#000', marginBottom: 10 }}>
+        <video ref={videoRef} style={{ width: '100%', display: 'block', aspectRatio: '4 / 3', objectFit: 'cover' }} muted playsInline />
+      </div>
+      <div className="muted small" style={{ textAlign: 'center', marginBottom: 10 }}>{t('Point the camera at the barcode.')}</div>
+    </>}
+    <Button variant="ghost" className="dim" onClick={close}>{t('Cancel')}</Button>
+  </>
+}
+
+// Free-text search against Open Food Facts, or a barcode scan — either way ends at
+// foodQuantitySheet, which is the only place an entry actually gets logged.
+// A bare run of 6-14 digits is a barcode typed by hand, not a product name — Open Food
+// Facts' free-text search does not reliably match a code as text, but its direct barcode
+// lookup does. Try that first and only fall back to text search if it comes up empty (the
+// digits might still be part of a real product name).
+const looksLikeBarcode = q => /^\d{6,14}$/.test(q)
+
+function FoodSearchSheet({ day, close }) {
+  const lang = useStore(s => s.S.lang) || 'en'
+  const [q, setQ] = useState('')
+  const [results, setResults] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState(false)
+
+  useEffect(() => {
+    const query = q.trim()
+    if (!query) { setResults([]); setErr(false); setLoading(false); return }
+    setLoading(true)
+    const ctrl = new AbortController()
+    const tm = setTimeout(() => {
+      const run = looksLikeBarcode(query)
+        ? lookupBarcode(query, lang, { signal: ctrl.signal }).then(p => p ? [p] : searchFood(query, lang, { signal: ctrl.signal }))
+        : searchFood(query, lang, { signal: ctrl.signal })
+      run
+        .then(r => { setResults(r); setErr(false) })
+        .catch(e => { if (e.name !== 'AbortError') setErr(true) })
+        .finally(() => setLoading(false))
+    }, 400)
+    return () => { clearTimeout(tm); ctrl.abort() }
+  }, [q, lang])
+
+  const pick = product => foodQuantitySheet(product, day, close)
+
+  const scan = () => {
+    const scanH = ui().openSheet(sclose => <BarcodeScanSheet close={sclose} onFound={async code => {
+      sclose()
+      try {
+        const product = await lookupBarcode(code, lang)
+        if (product) pick(product)
+        else toast(t('No match for that barcode — try searching by name'))
+      } catch (e) { toast(t('Could not look that up — check your connection')) }
+    }} />)
+    return scanH
+  }
+
+  return <>
+    <h3>{t('Add food')}</h3>
+    <div className="row" style={{ gap: 8, marginBottom: 12 }}>
+      <div style={{ flex: 1 }}><SearchField value={q} onChange={e => setQ(e.target.value)} onClear={() => setQ('')} placeholder={t('Search food…')} autoFocus /></div>
+      <button className="iconbtn" onClick={scan} aria-label={t('Scan barcode')}><Icon name="barcode" /></button>
+    </div>
+    {loading && <div className="muted small">{t('Searching…')}</div>}
+    {!loading && err && <div className="muted small">{t('Search failed — check your connection and try again.')}</div>}
+    {!loading && !err && !!q.trim() && !results.length && <div className="muted small">{t('No match')}</div>}
+    {!!results.length && <div className="list">
+      {results.map((p, i) => <div key={(p.barcode || '') + i} className="item" onClick={() => pick(p)}>
+        <div className="grow"><div className="tt">{p.name}</div><div className="ss">{p.brand ? p.brand + ' · ' : ''}{fmtNum(p.per100.kcal)} kcal/100g</div></div>
+        <Icon name="chevronRight" className="chev" />
+      </div>)}
+    </div>}
+  </>
+}
+export function foodSearchSheet(day) {
+  ui().openSheet(close => <FoodSearchSheet day={day} close={close} />)
+}
+
+/* ---- nutrition targets: profile inputs + the science behind the numbers ----
+ * See lib/food.js#nutritionTargets for the citations (Mifflin-St Jeor, Garthe et al. 2011,
+ * ISSN's protein position stand) — kept next to the formula rather than duplicated here. */
+function FoodProfileSheet({ close }) {
+  const st = useStore(s => s.S)
+  const p = st.foodProfile || {}
+  const [height, setHeight] = useState(p.heightCm || 175)
+  const [age, setAge] = useState(p.age || 30)
+  const [activity, setActivity] = useState(p.activity in ACTIVITY ? p.activity : 'moderate')
+  // Labels for every key ACTIVITY (lib/food.js) actually defines — a level added there
+  // without a line here still shows up, just under its raw key, instead of vanishing.
+  const ACTIVITY_LABEL = {
+    sedentary: [t('Sedentary'), t('Little or no exercise, desk job')],
+    light: [t('Light activity'), t('Light exercise 1–3 days a week')],
+    moderate: [t('Moderate'), t('Moderate exercise 3–5 days a week')],
+    active: [t('Active'), t('Hard exercise 6–7 days a week')],
+    veryActive: [t('Very active'), t('Hard daily exercise plus a physical job')]
+  }
+  const activityOptions = Object.keys(ACTIVITY).map(k => ({ value: k, label: (ACTIVITY_LABEL[k] || [k])[0], subtitle: (ACTIVITY_LABEL[k] || [])[1] }))
+  const save = () => {
+    update(s => { s.foodProfile = { heightCm: Math.round(height) || null, age: Math.round(age) || null, activity } })
+    close()
+    toast(t('Nutrition targets updated'))
+  }
+  return <>
+    <h3>{t('Nutrition targets')}</h3>
+    <div className="muted small" style={{ marginBottom: 12 }}>{t('Used to work out a calorie and macro target from your body and your weight goal — tap the (i) on the Food screen for how.')}</div>
+    <Stepper label={t('Height (cm)')} value={height} step={1} decimal={false} onChange={setHeight} />
+    <Stepper label={t('Age')} value={age} step={1} decimal={false} onChange={setAge} />
+    <Row icon="person" title={t('Sex (for the calorie formula)')}>
+      <Segmented className="seg-inline"
+        options={[{ value: 'male', label: t('Male') }, { value: 'female', label: t('Female') }]}
+        value={st.body === 'female' ? 'female' : 'male'} onChange={v => update(s => { s.body = v })} />
+    </Row>
+    <SelectRow icon="flame" iconTint="var(--orange)" title={t('Activity level')}
+      value={activity} onChange={setActivity} options={activityOptions} />
+    <div style={{ height: 14 }} />
+    <Button variant="primary" onClick={save}>{t('Save')}</Button>
+  </>
+}
+export const foodProfileSheet = () => ui().openSheet(close => <FoodProfileSheet close={close} />)
+
+export function foodTargetsInfoSheet() {
+  const tg = nutritionTargets(S())
+  ui().openSheet(() => <>
+    <h3>{t('Your calorie & macro target')}</h3>
+    <div className="muted small" style={{ lineHeight: 1.5, marginBottom: 12 }}>
+      {t('Resting energy comes from the Mifflin-St Jeor equation — found unbiased and the most accurate of the standard predictive formulas against measured metabolic rate. Your activity level scales that up to a daily total.')}
+    </div>
+    <div className="small" style={{ lineHeight: 1.6, marginBottom: 10 }}>
+      <b>{t('The calorie target')}</b> — {t('that total, adjusted by 0.7% of your body weight a week toward your goal — the rate that built or preserved muscle in a head-to-head trial against a faster rate in trained athletes. Never set below what your body burns at rest.')}
+    </div>
+    <div className="small" style={{ lineHeight: 1.6 }}>
+      <b>{t('Protein and fat')}</b> — {t('protein sits inside the range sports-nutrition research supports for holding onto muscle — higher while your target is below maintenance — and fat is never let drop below what hormonal health needs. Carbs fill whatever is left.')}
+    </div>
+    {tg && <div className="muted small" style={{ marginTop: 12 }}>{t('Right now: resting {0} kcal · daily total {1} kcal.', fmtNum(tg.rmr), fmtNum(tg.tdee))}</div>}
+  </>)
 }

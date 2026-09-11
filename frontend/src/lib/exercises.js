@@ -15,6 +15,11 @@ export function equipmentOf(list) {
   return Object.keys(c).sort((a, b) => c[b] - c[a] || (a < b ? -1 : 1))
 }
 
+// The fixed checklist for "what do you have" (gym equipment presets, Coach intake) — the
+// whole catalogue's equipment types, most common first, capped so the list stays a screen's
+// worth of chips rather than every niche attachment in the dataset.
+export const COMMON_EQUIPMENT = equipmentOf(EXDB).slice(0, 14)
+
 // Custom (user-created) exercises live in synced state S.customEx (issue #11) and are
 // merged into the id index here so every EXIDX[id] lookup keeps working unchanged.
 let customIds = []

@@ -1,14 +1,43 @@
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store/useStore.js'
-import { DAYN, uid, exCount } from '../lib/format.js'
+import { DAYN, uid, exCount, fmtNum } from '../lib/format.js'
 import { t } from '../lib/i18n.js'
-import { dayAssignSheet, loadStarterPlan, planToolsSheet } from '../sheets.jsx'
+import { dayAssignSheet, loadStarterPlan, planToolsSheet, muscleBalanceInfoSheet } from '../sheets.jsx'
 import Icon from '../components/Icon.jsx'
 import { Button } from '../components/ui.jsx'
 import { glyphOf, DEFAULT_GLYPH } from '../lib/glyphs.js'
 import { coachAvailable } from '../lib/coach.js'
 import { DEMO } from '../lib/demo.js'
 import { MOBILE } from '../lib/mobile.js'
+import { weeklyPlanLoad, MUSCLES, MUSCLE_NAME, SETS_GUIDELINE, FREQUENCY_GUIDELINE } from '../lib/muscles.js'
+
+// A live read of the science-backed guidelines (see muscleBalanceInfoSheet) against the
+// *planned* week — before a single session happens, not after.
+function MuscleBalance({ S }) {
+  const { byMuscle, plannedDays } = weeklyPlanLoad(S)
+  const trained = MUSCLES.filter(m => byMuscle[m])
+  if (!trained.length) return null
+  return <>
+    <div className="row between" style={{ marginTop: 22, marginBottom: 10 }}>
+      <h4 className="sec" style={{ margin: 0 }}>{t('Muscle balance')}</h4>
+      <button className="iconbtn" aria-label={t('About this')} onClick={muscleBalanceInfoSheet}><Icon name="info" /></button>
+    </div>
+    <div className="list" style={{ gap: 0 }}>
+      {trained.map(m => {
+        const { sets, days } = byMuscle[m]
+        const low = sets < SETS_GUIDELINE.low
+        const freqFlag = days < FREQUENCY_GUIDELINE && plannedDays >= FREQUENCY_GUIDELINE
+        return <div key={m} className="row between" style={{ padding: '7px 2px', borderBottom: '1px solid var(--sep)' }}>
+          <span className="small">{t(MUSCLE_NAME[m])}</span>
+          <span className="row" style={{ gap: 10 }}>
+            <span className="small" style={{ color: low ? 'var(--yellow)' : 'var(--label-2)' }}>{t('{0} sets/wk', fmtNum(sets))}</span>
+            <span className="small" style={{ color: freqFlag ? 'var(--yellow)' : 'var(--label-2)' }}>{t('{0}x/wk', days)}</span>
+          </span>
+        </div>
+      })}
+    </div>
+  </>
+}
 
 export default function Plan() {
   const nav = useNavigate()
@@ -54,5 +83,6 @@ export default function Plan() {
         <Button icon="sparkles" onClick={loadStarterPlan}>{t('Load starter plan (Push / Pull / Legs)')}</Button>
       </>}
     </div></div>
+    <MuscleBalance S={S} />
   </>
 }

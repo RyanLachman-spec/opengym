@@ -31,7 +31,7 @@ export const MAX_SESSIONS = 60;
    list — a screen that drifts from the payload is worse than no screen. */
 export const DATA_CATEGORIES = [
   'plan',        // routines, exercises, sets/reps, schedule, progression settings
-  'training',    // logged sets, targets, effort ratings, durations, PRs in the review window
+  'training',    // logged sets, targets, effort ratings, durations, PRs, sore spots you marked, in the review window
   'bodyweight',  // weigh-ins in the window and your goal weight
   'profile',     // the intake answers you gave the Coach, including any limitations
   'prefs'        // unit, language, effort scale
@@ -73,6 +73,20 @@ export function stallCount(sessions) {
   let n = 0;
   for (let i = sessions.length - 1; i >= 0; i--) { if (sessions[i].ok) break; n++; }
   return n;
+}
+
+/* ---------- effort confidence ----------
+   Self-reported RIR/RPE tracks actual reps-in-reserve closely near failure but drifts wide
+   at moderate reserve — lifters are consistently accurate at RIR 0-1 and consistently
+   optimistic from RIR 3 up (the same gap shows as RPE ≤7). Rather than have the Coach weigh
+   every rating the same, each rated set is tagged with how far to trust it, so a stall read
+   against "RIR 1, high confidence" carries more than one read against "RIR 4, low confidence".
+   Purely a read of a number already in the payload under the 'training' category (FR-09/10) —
+   no new data leaves the device, so this needs no consent-version bump. */
+function effortConfidence(rir, rpe) {
+  if (rir != null) return rir <= 1 ? 'high' : 'low';
+  if (rpe != null) return rpe >= 9 ? 'high' : 'low';
+  return null;
 }
 
 /* ---------- plan cleaning (mirrors plan-share.js cleanEx) ---------- */
@@ -211,6 +225,9 @@ function cleanWorkout(w) {
     minutes: w.end && w.start ? Math.round((w.end - w.start) / 60000) : null,
     ...(w.rating ? { rating: w.rating } : {}),
     ...(w.note ? { note: String(w.note).slice(0, 300) } : {}),
+    // Muscles marked sore/tender on the post-workout body map (issue: feature request) — a
+    // signal the review can weigh alongside stalls and effort, never taken alone.
+    ...(w.soreness?.length ? { soreness: w.soreness.slice(0, 18).map(String) } : {}),
     prs: (w.prs || []).length,
     entries: (w.entries || []).map(en => ({
       id: en.id,
@@ -225,6 +242,8 @@ function cleanWorkout(w) {
         if (s.speed != null) o.speed = s.speed;
         if (s.rir != null) o.rir = s.rir;
         if (s.rpe != null) o.rpe = s.rpe;
+        const conf = effortConfidence(s.rir, s.rpe);
+        if (conf) o.effortConfidence = conf;
         return o;
       })
     }))

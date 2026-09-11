@@ -107,8 +107,9 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
         disabledByEnv: cfgStore.COACH_DISABLED,
         enabled: !!cfg.enabled,
         provider: cfg.provider,
-        providers: Object.entries(cfgStore.PROVIDERS).map(([id, p]) => ({ id, label: p.label, runtime: p.runtime, setupToken: !!p.setupToken, deviceLogin: !!p.deviceLogin, apiKey: !!p.apiKeyEnv })),
+        providers: Object.entries(cfgStore.PROVIDERS).map(([id, p]) => ({ id, label: p.label, runtime: p.runtime, setupToken: !!p.setupToken, deviceLogin: !!p.deviceLogin, apiKey: !!p.apiKeyEnv, localEndpoint: !!p.localEndpoint })),
         model: cfg.model,
+        baseUrl: cfg.baseUrl,
         caps: cfg.caps,
         runtime: { ok: !!check.ok, version: check.version || null, error: check.error || null },
         auth: await oauth.liveAuthStatus(),
@@ -132,6 +133,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
         patch.provider = body.provider;
       }
       if (body.model !== undefined) patch.model = body.model ? String(body.model).slice(0, 80) : null;
+      if (body.baseUrl !== undefined) patch.baseUrl = body.baseUrl ? String(body.baseUrl).slice(0, 200) : null;
       if (body.caps) {
         patch.caps = {
           perProfileDaily: Math.max(0, Math.min(200, +body.caps.perProfileDaily || 0)),

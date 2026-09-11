@@ -10,7 +10,8 @@ import { wakeLockSupported } from '../lib/wakelock.js'
 import { t, LANGS, INSTR_LANGS } from '../lib/i18n.js'
 import { DEMO, REPO } from '../lib/demo.js'
 import { MOBILE, shareExport, syncReminder } from '../lib/mobile.js'
-import { loadStarterPlan, confirmSheet, importFromApp } from '../sheets.jsx'
+import { loadStarterPlan, confirmSheet, importFromApp, equipmentPresetsSheet, progressPhotosSheet, shareProgressSheet } from '../sheets.jsx'
+import { buildAppleHealthXML } from '../lib/export-health.js'
 import { coachAvailable, hasConsent } from '../lib/coach.js'
 import { forgetCoach } from '../lib/coach-api.js'
 import Icon from '../components/Icon.jsx'
@@ -38,6 +39,21 @@ export default function Settings() {
     const blob = new Blob([json], { type: 'application/json' })
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); URL.revokeObjectURL(a.href)
     toast(t('Backup exported'))
+  }
+  // The mirror of "Import from another app" — body weight OUT, in the same Apple Health XML
+  // shape that importer (and Apple Health, Health Connect, most trackers) can read back in.
+  // Not a lock-in play: leaving openGym shouldn't mean losing your weigh-in history.
+  const doExportHealth = async () => {
+    if (!S.bodyweight.length) { toast(t('No body weight logged yet')); return }
+    const xml = buildAppleHealthXML(S)
+    const name = 'opengym-bodyweight-' + todayISO() + '.xml'
+    if (MOBILE) {
+      try { await shareExport(xml, name); toast(t('Body weight exported')) } catch (e) { /* share sheet dismissed */ }
+      return
+    }
+    const blob = new Blob([xml], { type: 'application/xml' })
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); URL.revokeObjectURL(a.href)
+    toast(t('Body weight exported'))
   }
   const doImport = ev => {
     const f = ev.target.files[0]; if (!f) return
@@ -89,6 +105,7 @@ export default function Settings() {
           onClick={() => window.open(REPO, '_blank', 'noopener')} />
       </> : user ? <>
         <Row icon="personCircle" iconTint="var(--grey)" title={user.name} subtitle={t('Signed in with passkey — data syncs to this profile.')} />
+        <Row icon="link" iconTint="var(--blue)" title={t('Share progress')} subtitle={t('A read-only summary link — no login needed to view it')} accessory="chevron" onClick={shareProgressSheet} />
         {user.admin && <Row icon="wrench" iconTint="var(--indigo)" title={t('Admin dashboard')} accessory="chevron" onClick={() => nav('/admin')} />}
         <Row icon="signOut" iconTint="var(--red)" title={t('Sign out')} danger onClick={() => confirmSheet({ title: t('Sign out?'), message: t('Your data is synced to your profile first, then cleared from this device.'), confirmText: t('Sign out'), danger: true, onConfirm: () => { signOut(); nav('/home') } })} />
         <Row icon="shield" iconTint="var(--red)" title={t('Sign out everywhere')} subtitle={t('Ends this profile’s sessions on all your devices.')} danger onClick={signOutEverywhere} />
@@ -116,13 +133,20 @@ export default function Settings() {
           options={[{ value: 'kg', label: 'kg' }, { value: 'lb', label: 'lb' }]}
           value={S.unit} onChange={v => update(s => { s.unit = v })} />
       </Row>
+      <Row icon="dumbbell" iconTint="var(--orange)" title={t('Gym equipment')}
+        subtitle={S.equipmentPresets?.length ? (S.equipmentPresets.find(p => p.id === S.activeEquipment)?.name || t('Not narrowed — showing everything')) : t('Save what a gym has, switch between gyms')}
+        accessory="chevron" onClick={equipmentPresetsSheet} />
+      <Row icon="figureStrength" iconTint="var(--pink)" title={t('Progress photos')}
+        subtitle={t('Stored only on this device — not part of your backup')}
+        accessory="chevron" onClick={progressPhotosSheet} />
     </Section>
 
     {/* ---------- during a workout ---------- */}
     <Section title={t('During a workout')} footer={wakeOK ? t('The screen stays on while a workout is running, so you don’t have to unlock your phone between sets.') : null}>
       <SelectRow icon="timer" iconTint="var(--orange)" title={t('Rest timer')}
         value={S.restSec} onChange={v => update(s => { s.restSec = v })}
-        options={[60, 90, 120, 150, 180].map(v => ({ value: v, label: v + 's' }))} />
+        options={[60, 90, 120, 150, 180].map(v => ({ value: v, label: v + 's' }))}
+        note={t('The studies disagree on the exact optimum, but agree on this: resting under ~60s consistently costs hypertrophy compared to longer rests. A 2016 trial found 3 minutes beat 1 minute over 8 weeks; a 2024 meta-analysis of the evidence since favors 60–90s and up. Shorter isn’t free time saved — it’s volume you can’t sustain in later sets.')} />
       {(wakeOK || !MOBILE) && (
         <Row icon="sun" iconTint="var(--yellow)" title={t('Keep screen awake')}
           subtitle={wakeOK ? null : t('Not supported in this browser.')}>
@@ -189,10 +213,12 @@ export default function Settings() {
     <Section title={t('Data')}>
       <Row icon="sparkles" iconTint="var(--acc)" title={t('Load starter plan (PPL)')} accessory="chevron" onClick={loadStarterPlan} />
       <Row icon="shuffle" iconTint="var(--teal)" title={t('Import from another app')}
-        subtitle={t('FitNotes, Strong, Hevy — or body weight from Apple Health')}
+        subtitle={t('FitNotes, Strong, Hevy — or body weight from Apple Health, Samsung Health, Google Fit')}
         accessory="chevron" onClick={() => importRef.current.click()} />
       <Row icon="upload" iconTint="var(--blue)" title={t('Import backup')} accessory="chevron" onClick={() => fileRef.current.click()} />
       <Row icon="download" iconTint="var(--blue)" title={t('Export backup (JSON)')} accessory="chevron" onClick={doExport} />
+      <Row icon="upload" iconTint="var(--teal)" title={t('Export body weight (Apple Health)')}
+        subtitle={t('For Apple Health, Health Connect, or another tracker')} accessory="chevron" onClick={doExportHealth} />
       {/* Also drops anything the Coach is holding server-side: a wipe that leaves a pending
           proposal on the server behind would be a wipe in name only. */}
       <Row icon="trash" iconTint="var(--red)" title={t('Reset everything')} danger onClick={() => confirmSheet({ title: t('Reset everything?'), message: t('Deletes your plan, workouts and body weight on this device. This cannot be undone.'), confirmText: t('Delete everything'), danger: true, onConfirm: () => { if (user) forgetCoach().catch(() => {}); replaceState(JSON.parse(JSON.stringify(DEF)), true); nav('/home'); toast(t('All data reset')) } })} />

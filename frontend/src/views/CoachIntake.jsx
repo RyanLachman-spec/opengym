@@ -4,7 +4,7 @@ import { useStore } from '../store/useStore.js'
 import { useUI } from '../store/useUI.js'
 import { t } from '../lib/i18n.js'
 import { DAYN } from '../lib/format.js'
-import { EXDB } from '../lib/exercises.js'
+import { COMMON_EQUIPMENT } from '../lib/exercises.js'
 import { emptyCoach, coachAvailable } from '../lib/coach.js'
 import { requestPlan } from '../lib/coach-api.js'
 import { DEMO } from '../lib/demo.js'
@@ -32,11 +32,7 @@ const SESSION_MIN = [30, 45, 60, 75, 90]
 
 // Equipment options come from the library's own taxonomy, most common first, so every choice
 // on screen has exercises behind it.
-const EQUIPMENT = (() => {
-  const count = {}
-  EXDB.forEach(e => { if (e.eq) count[e.eq] = (count[e.eq] || 0) + 1 })
-  return Object.keys(count).sort((a, b) => count[b] - count[a]).slice(0, 14)
-})()
+const EQUIPMENT = COMMON_EQUIPMENT
 
 const STEPS = ['goal', 'days', 'length', 'equipment', 'limits', 'extras']
 
@@ -143,6 +139,10 @@ export default function CoachIntake() {
       {key === 'equipment' && <>
         <h2 style={{ marginTop: 0 }}>{t('What can you train with?')}</h2>
         <div className="muted small" style={{ marginBottom: 10 }}>{t('Pick everything you have access to. Leave it empty and the Coach will use the whole library.')}</div>
+        {S.equipmentPresets?.length > 0 && <div className="row" style={{ flexWrap: 'wrap', gap: 7, marginBottom: 10 }}>
+          {S.equipmentPresets.map(preset => <button key={preset.id} className="chip nocap"
+            onClick={() => set({ equipment: [...preset.eq] })}><Icon name="dumbbell" style={{ fontSize: 12, marginRight: 4 }} />{t('Use {0}', preset.name)}</button>)}
+        </div>}
         <div className="row" style={{ flexWrap: 'wrap', gap: 7 }}>
           {EQUIPMENT.map(e => <button key={e} className={'chip' + (p.equipment.includes(e) ? ' on' : '')}
             onClick={() => toggleEq(e)} style={{ textTransform: 'capitalize' }}>{e}</button>)}

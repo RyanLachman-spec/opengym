@@ -27,7 +27,7 @@ const GOALS = ['strength', 'muscle', 'general fitness', 'fat loss', 'endurance']
 // so the promise on screen cannot drift from what actually leaves the box.
 const CATEGORY_TEXT = {
   plan: ['Your plan', 'Routines, exercises, sets and reps, your weekly schedule and progression settings.'],
-  training: ['Your logged training', 'Sets you logged in the review window — weights, reps, times, effort ratings and how long sessions took.'],
+  training: ['Your logged training', 'Sets you logged in the review window — weights, reps, times, effort ratings, how long sessions took, and any sore spots you marked afterwards.'],
   bodyweight: ['Body weight', 'Weigh-ins from the same window, and your goal weight if you set one.'],
   profile: ['What you tell the Coach', 'Your intake answers, including any limitations or injuries you describe.'],
   prefs: ['A few preferences', 'Your unit, your language and which effort scale you log.']
